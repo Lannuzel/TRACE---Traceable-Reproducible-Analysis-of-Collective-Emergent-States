@@ -1,4 +1,4 @@
-# TRACE — Traceable, Reproducible Analysis of Collective Emergent States
+# TRACE - Traceable, Reproducible Analysis of Collective Emergent States
 
 **TRACE** is an open, modular pipeline that extracts nonverbal indices of team coordination from multiparty interaction recordings. It processes three modalities — speech turn-taking, facial action units, and shared visual attention — and fuses them into provenance-traced high-level coordination indices.
 
