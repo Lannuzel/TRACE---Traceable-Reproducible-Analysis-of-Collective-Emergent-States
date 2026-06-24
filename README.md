@@ -6,22 +6,38 @@
 
 ---
 
-## Overview
+## Study Context — Collective Intelligence in BIM Collaboration
 
-The pipeline was developed in the context of a longitudinal study of **collective intelligence (CI)** in triads performing BIM (Building Information Modeling) tasks under two interaction modalities:
+The pipeline was developed for a longitudinal study of **collective intelligence (CI)** in triads performing collaborative tasks under two interaction modalities:
 
-- **VR** — immersive virtual reality
-- **PC** — 2D Revit interface
+- **VR** — immersive virtual reality *(BIM task environment — dataset link: coming soon)*
+- **PC** — 2D Revit interface *(BIM PC scenarios — dataset link: coming soon)*
+
+The study is grounded in the **Woolley et al. (2010)** collective intelligence framework, extended with Riedl's team indicators (skill, strategy, effort). Nonverbal behaviour is treated as a proxy for emergent coordination states (TMS, TAS, TRS) that mediate group performance.
 
 **Experimental design:**
 
-| Dimension   | Values                             |
-|-------------|------------------------------------|
-| Timepoints  | T1, T2                             |
-| Modalities  | VR, PC                             |
-| Scenarios   | S1 (room layout), S2 (BIM objects) |
+| Dimension   | Values                               |
+|-------------|--------------------------------------|
+| Timepoints  | T1, T2 (longitudinal)                |
+| Modalities  | VR (immersive), PC (Revit 2D)        |
+| Scenarios   | S1 (spatial layout), S2 (BIM objects)|
 | Roles       | Three role-based positions per triad |
 | Groups      | Triads with a shared group identifier |
+
+### Collective Intelligence Measures
+
+Beyond nonverbal indices, the pipeline includes two modules that operationalise collective intelligence directly:
+
+**`analyse_TCI/TCI.py`** — computes the **c-factor** (Woolley et al., 2010), a general collective intelligence factor extracted from a battery of cognitive tasks administered to each triad. The c-factor predicts group performance independently of individual ability.
+
+**`analyse_TCI/compute_team_indicators_rields.py`** — computes team-level indicators inspired by Riedl et al.:
+- **Skill** — mean individual performance on standardised tasks
+- **Strategy** — consistency of approach across task types
+- **Effort** — activity volume proxy (event count or keystroke length)
+- **Congruence** — alignment between individual contributions
+
+These indicators are used alongside INV features in regression and path analyses to model the full input–mediator–output structure of collective intelligence.
 
 ---
 
@@ -68,10 +84,10 @@ Processes per-speaker WAV files through a 3-pass IPU-to-turn aggregation:
 
 Key features produced:
 - `audio_avg_speaking_turn_duration_s` — mean CA turn duration
-- `audio_overlap_speaking_ratio` — ratio of overlapping speech (interruptions)
+- `audio_overlap_speaking_ratio` — ratio of overlapping speech
 - `audio_floor_exchange_pause_mean_s` — mean inter-turn gap at floor exchanges
-- `audio_speech_equality_*` — Gini/entropy of speaking time across roles
-- `audio_turn_frequency_per_min` — floor exchange rate
+- `audio_backchannel_rate_per_min` — backchannel rate (strict 4-filter detection)
+- `participation_entropy` — Shannon entropy of speaking-time distribution across roles
 
 ### Stage 2 — Gaze (shared visual attention)
 
@@ -80,23 +96,23 @@ Key features produced:
 Processes eye-tracking data (VR only for directional gaze; PC has no gaze capture). Computes group-level and dyadic metrics over a sliding window framework.
 
 Key features produced:
-- `gaze_mutual_gaze_ratio` — proportion of time ≥2 members share mutual gaze
-- `gaze_shared_visual_attention_ratio` — proportion of time ≥2 members fixate the same AOI (200–500 ms window)
-- `shared_obj_ratio`, `shared_obj_n_episodes`, `shared_obj_dur_mean_s` — shared object fixation metrics
-- `gaze_joint_attention_idx_raw` — composite JVA score (duration × simultaneity)
-- `gaze_entropy` — Shannon entropy of fixation distribution across AOIs
-- Dyadic gaze-toward-partner ratios per role pair
+- `gaze_convergence_ratio` — proportion of time with directional gaze convergence (canonical)
+- `gaze_mutual_gaze_ratio` — proportion of time with mutual gaze between members
+- `gaze_entropy_dir_mean` — directional gaze entropy (canonical; low = focused attention)
+- `gaze_joint_attention_idx_raw` — composite JVA score (convergence + mutual gaze)
+- `gaze_attention_coordination_idx` — composite coordination index
 
 ### Stage 3 — Face (action units & synchrony)
 
 **Script:** `scripts/analyse_inv/face/analyze_aus_group.py`
 
-Processes OpenFace FACS outputs (Action Units intensity + presence). Runs OpenFace via `openface/run_openface_and_export_facs.py`.
+Processes OpenFace FACS outputs (Action Units intensity + presence).
 
 Key features produced:
-- `face_joy_ratio`, `face_surprise_ratio`, `face_sad_ratio` — proportion of time emotion-AUs are active at group level
-- `face_sync_*` — facial synchrony scores across dyads (correlation of AU time series)
-- AU presence/intensity aggregates per role
+- `face_smile_ratio` — Duchenne smile ratio (AU6+AU12 co-active)
+- `face_negative_affect_ratio` — sadness marker ratio (AU15+AU17 co-active)
+- `face_facial_synchrony` — inter-member facial synchrony (Pearson, per-AU)
+- `affect_alignment_idx` — composite positive/negative affect alignment
 
 ### Stage 4 — High-Level Feature Fusion
 
@@ -107,15 +123,8 @@ Takes the three modality-level CSVs as input. For each high-level index, a `firs
 | Output | Description |
 |--------|-------------|
 | `high_level_features.csv` | Compact dataset — one row per group × condition × scenario × timepoint |
-| `high_level_features_audit.csv` | Full audit dataset including all intermediate values and `*_source` columns |
+| `high_level_features_audit.csv` | Full audit dataset with all intermediate values and `*_source` columns |
 | `hlf_availability_summary.csv` | Per-feature missingness and coverage statistics |
-
-Key high-level indices:
-- `hlf_speech_equality` — speaking-time equality (Gini-based, group level)
-- `hlf_turn_regulation_idx` — composite turn-taking regularity index
-- `hlf_shared_attention_idx` — fused shared visual attention (gaze + proxy)
-- `hlf_facial_sync_idx` — group facial synchrony composite
-- `hlf_task_focus_ratio` — proportion of attention directed to task objects
 
 ### Stage 5 — Structure Analysis (PCA + Redundancy)
 
@@ -123,20 +132,18 @@ Key high-level indices:
 
 Runs hierarchical clustering, correlation matrix, and PCA on the full HLF feature space. Produces two parallel outputs:
 
-- `results_inv_structure/with_pruning/` — PCA after removing redundant features (|r| > 0.80), keeping the higher-priority feature per correlated pair
+- `results_inv_structure/with_pruning/` — PCA after removing redundant features (|r| > 0.80)
 - `results_inv_structure/without_pruning/` — PCA on all valid features (for comparison)
-
-Priority rules for pruning: (1) fewer missing values, (2) business priority rank in `inv_features_config.py`, (3) shorter canonical name.
 
 ---
 
 ## Repository Structure
 
 ```
-Longitudinale/
+<project_root>/
 ├── scripts/
-│   ├── run_inv.py                        # Main entry point: full INV pipeline
-│   ├── run_performance.py                # Main entry point: task performance scoring
+│   ├── run_inv.py                        # Entry point: full INV pipeline
+│   ├── run_performance.py                # Entry point: task performance scoring
 │   ├── build_schema.py                   # Pipeline diagram generator
 │   │
 │   ├── common/                           # Shared utilities (imported by all modules)
@@ -148,7 +155,6 @@ Longitudinale/
 │   │
 │   ├── config/
 │   │   └── inv_features_config.py        # Single source of truth for all INV features
-│   │                                     # (families, priorities, redundancy, core flags)
 │   │
 │   ├── analyse_inv/
 │   │   ├── speech/
@@ -158,8 +164,8 @@ Longitudinale/
 │   │   │   ├── analyze_gaze.py           # Group-level gaze: JVA, shared attention
 │   │   │   ├── analyze_gaze_directional.py  # Directional gaze toward partners/objects
 │   │   │   ├── diagnose_eyetracking.py   # Completeness diagnostic
-│   │   │   ├── reconstruct_eyetracking.py   # Missing gaze reconstruction
-│   │   │   └── refine_yaw_eyetracking.py    # Yaw correction (MOD-16)
+│   │   │   ├── reconstruct_eyetracking.py
+│   │   │   └── refine_yaw_eyetracking.py
 │   │   ├── face/
 │   │   │   ├── analyze_aus_group.py      # AU/emotion aggregation at group level
 │   │   │   └── openface/
@@ -167,7 +173,7 @@ Longitudinale/
 │   │   │       └── run_openface_and_export_facs.py
 │   │   ├── hlf/
 │   │   │   ├── compute_high_level_features.py      # Multimodal fusion + provenance
-│   │   │   └── compute_high_level_features_old_gaze.py  # Variant (legacy gaze pipeline)
+│   │   │   └── compute_high_level_features_old_gaze.py
 │   │   └── analyze_inv_structure.py      # PCA, clustering, redundancy diagnostics
 │   │
 │   ├── analyse_performance/              # Statistical analyses of task performance
@@ -185,24 +191,25 @@ Longitudinale/
 │   │   ├── S2/                           # Scenario 2 evaluators (VR + PC)
 │   │   │   ├── PC/{eval_consignes_s2,performance_eval}.py
 │   │   │   └── VR/{eval_consignes_s2,performance_eval}.py
-│   │   ├── corrections/                  # Reference solutions (PC_s1, VR_S1, PC_s2, VR_S2)
-│   │   └── script_revit/                 # Dynamo scripts for Revit export
+│   │   ├── corrections/                  # Reference solutions per scenario/modality
+│   │   └── script_revit/                 # Dynamo scripts for Revit data export
 │   │
-│   ├── analyse_TCI/
-│   │   ├── TCI.py                        # C-factor computation (Woolley et al.)
+│   ├── analyse_TCI/                      # Collective intelligence measures
+│   │   ├── TCI.py                        # C-factor computation (Woolley et al., 2010)
 │   │   └── compute_team_indicators_rields.py  # Riedl indicators (skill, strategy, effort)
 │   │
 │   ├── analyse_questionnaire/            # Questionnaire reliability & descriptive analysis
 │   │   ├── main.py
-│   │   └── py/{config,io_read,transform,reliability,descriptives,
-│   │            role_tests,plots,item_pruning,g3_context,scenario_modalite}.py
+│   │   └── py/                           # config, io_read, transform, reliability,
+│   │                                     # descriptives, role_tests, plots, item_pruning,
+│   │                                     # g3_context, scenario_modalite
 │   │
-│   ├── rapport/v2/                       # PDF report generation (canonical publication pipeline)
-│   │   ├── main.py                       # Orchestrator (modes: vr_only, pc_vr, inv_vr, pca_vr)
+│   ├── rapport/v2/                       # PDF report generation (publication pipeline)
+│   │   ├── main.py                       # Orchestrator (vr_only, pc_vr, inv_vr, pca_vr)
 │   │   └── py/                           # 30+ report modules
 │   │
 │   ├── sem/
-│   │   └── pls_sem_vr.py                 # PLS-SEM path analysis (VR)
+│   │   └── pls_sem_vr.py                 # PLS-SEM path analysis
 │   │
 │   ├── visualisation_sociale/
 │   │   ├── mirage_sociogram.py           # Offline multimodal sociogram (MIRAGE-inspired)
@@ -223,52 +230,73 @@ Longitudinale/
 
 ## Quick Start
 
-All commands run from `scripts/`:
+Set your paths as environment variables or pass them directly to each script. No hardcoded paths — all scripts accept `--data-dir`, `--out-dir`, and similar arguments.
 
 ```bash
-cd Longitudinale/scripts
+DATA_DIR=/path/to/raw/data
+RESULTS_DIR=/path/to/results
+SCRIPTS_DIR=/path/to/scripts
 ```
 
 ### Full INV pipeline
 
 ```bash
+cd $SCRIPTS_DIR
+
 # All modalities
-python run_inv.py --data-dir <data_dir> --out-dir ../results/INV
+python run_inv.py --data-dir $DATA_DIR --out-dir $RESULTS_DIR/INV
 
 # Speech only
-python run_inv.py --data-dir <data_dir> --inv speech --out-dir ../results/INV
+python run_inv.py --data-dir $DATA_DIR --inv speech --out-dir $RESULTS_DIR/INV
 
 # Recompute HLF from existing modality CSVs
 python run_inv.py --hlf-only \
-    --speech-csv ../results/INV/audio_features.csv \
-    --gaze-group-csv ../results/INV/gaze/ALL_metrics_overall.csv \
-    --gaze-pair-csv ../results/INV/gaze/ALL_metrics_pairs.csv \
-    --face-csv ../results/INV/face_emotion_metrics_all.csv \
-    --out-dir ../results/INV
+    --speech-csv $RESULTS_DIR/INV/audio_features.csv \
+    --gaze-group-csv $RESULTS_DIR/INV/gaze/ALL_metrics_overall.csv \
+    --gaze-pair-csv $RESULTS_DIR/INV/gaze/ALL_metrics_pairs.csv \
+    --face-csv $RESULTS_DIR/INV/face_emotion_metrics_all.csv \
+    --out-dir $RESULTS_DIR/INV
 ```
 
 ### Task performance scoring
 
 ```bash
-python run_performance.py --results-dir ../results
+python run_performance.py --results-dir $RESULTS_DIR
 ```
 
 **Scoring weights:** M1 (rules followed) × 0.5 + M3 (spatial precision) × 0.5 → `Score_perf_tsk`
 
+### C-factor & team indicators
+
+```bash
+# C-factor (Woolley et al., 2010)
+python analyse_TCI/TCI.py $DATA_DIR/data_TCI \
+    --out $RESULTS_DIR/TCI/c_scores.csv \
+    --missing mean --profile --scatter --heatmap
+
+# Riedl team indicators
+python analyse_TCI/compute_team_indicators_rields.py \
+    --groups $DATA_DIR/data_TCI \
+    --c-scores $RESULTS_DIR/TCI/c_scores.csv \
+    --out-dir $RESULTS_DIR/indices_collab
+```
+
 ### PCA structure analysis
 
 ```bash
-cd analyse_inv
-python analyze_inv_structure.py
-# Outputs: results/results_inv_structure/with_pruning/ and without_pruning/
+cd $SCRIPTS_DIR/analyse_inv
+python analyze_inv_structure.py \
+    --data $RESULTS_DIR/INV/high_level_features_audit.csv \
+    --out $RESULTS_DIR/results_inv_structure
+# Outputs: with_pruning/ and without_pruning/
 ```
 
-### PDF report (publication pipeline)
+### PDF report
 
 ```bash
-python rapport/v2/main.py \
-    --results-dir ../results \
-    --out-dir ../results/rapport_v2
+python $SCRIPTS_DIR/rapport/v2/main.py \
+    --results-dir $RESULTS_DIR \
+    --out-dir $RESULTS_DIR/rapport_v2
 ```
 
 | Argument | Description |
@@ -281,10 +309,10 @@ python rapport/v2/main.py \
 ### Multimodal sociogram
 
 ```bash
-python visualisation_sociale/mirage_sociogram.py \
+python $SCRIPTS_DIR/visualisation_sociale/mirage_sociogram.py \
     --group-id <group_id> --modality VR --scenario S2 --timepoint T1 \
-    --data-dir <data_dir> \
-    --out-dir ../results/visualisation_sociale/<group_id> \
+    --data-dir $DATA_DIR \
+    --out-dir $RESULTS_DIR/visualisation_sociale/<group_id> \
     --snapshot-at 120
 ```
 
@@ -305,7 +333,7 @@ Feature selection is intentionally dissociated by analysis context:
 |---------|---------------------|
 | Report | `core` / `core_hl` flags + `report_preferred` |
 | PCA | `FEATURE_PRIORITY` ranks |
-| Regression (v2) | `REGRESSION_RETAINED_INV_FEATURES` ∩ `inv_pruned_features.csv` (kept=1) |
+| Regression | `REGRESSION_RETAINED_INV_FEATURES` ∩ `inv_pruned_features.csv` (kept=1) |
 
 ---
 
