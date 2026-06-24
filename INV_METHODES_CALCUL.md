@@ -1,8 +1,8 @@
 # Méthodes de calcul des variables INV — état actuel
 
 > **Source de vérité :** `scripts/config/inv_features_config.py`  
-> **Dernière mise à jour :** 2026-05-09  
-> **Pipeline :** MOD-1 à MOD-10 intégrés (voir `scripts/analyse_inv/CHANGELOG.md`)  
+> **Dernière mise à jour :** 2026-06-24  
+> **Pipeline :** MOD-1 à MOD-11 intégrés + analyse directionnelle gaze (voir `scripts/analyse_inv/CHANGELOG.md`)  
 > **Périmètre :** variables INV core utilisées dans la régression stepwise et la path analysis VR
 
 ---
@@ -32,7 +32,7 @@
 ```
 audio_avg_speaking_turn_duration_s = mean( durée(tour_CA) )
 ```
-sur l'ensemble des tours CA des trois rôles (calculateur, modélisateur, lecteur), agrégé au niveau groupe.
+sur l'ensemble des tours CA des trois rôles, agrégé au niveau groupe.
 
 **Fichiers :** `speech/analyze_audio.py::aggregate_ipus_to_ca_turns` → `speech/compute_audio_features.py::build_features`  
 **Référence :** Sacks, Schegloff & Jefferson (1974) ; Levitan & Hirschberg (2011)
@@ -272,30 +272,18 @@ où chaque `z_*` est le z-score de la variable correspondante calculé sur l'éc
 
 ## 3. Gaze
 
-### `gaze_entropy_mean_participants`
-**Description :** Entropie moyenne du regard (Shannon, normalisée)
+> **Note pipeline :** depuis MOD-11 (analyse directionnelle), les variables canoniques sont `gaze_convergence_ratio` et `gaze_entropy_dir_mean`. Les anciennes variables (`shared_obj_ratio`, `gaze_entropy_mean_participants`) sont conservées en legacy dans les CSV pour traçabilité et backward compatibility.
 
-Pour chaque participant :
+### `gaze_convergence_ratio` *(canonique)*
+**Description :** Ratio de temps passé en convergence visuelle directionnelle
 
-```
-p_j = dur_fixation_objet_j / sum_j( dur_fixation_objet_j )
-H   = − sum_j( p_j × log2(p_j) )
-H_normalise = H / log2( N_objets_fixés )
-```
+Calculé par `analyze_gaze_directional.py` à partir des angles de regard inter-participants. Remplace `shared_obj_ratio` comme source principale dans le HLF.
 
-Puis au niveau groupe :
-
-```
-gaze_entropy_mean_participants = mean( H_normalise )  sur les participants
-```
-
-Valeur haute = regard dispersé sur de nombreux objets ; valeur basse = regard focalisé.
-
-**Fichiers :** `gaze/analyze_gaze.py`
+**Fichiers :** `gaze/analyze_gaze_directional.py`
 
 ---
 
-### `shared_obj_ratio`
+### `shared_obj_ratio` *(legacy — fallback si analyse directionnelle absente)*
 **Description :** Ratio de temps passé en co-fixation sur un objet partagé
 
 Grille temporelle à `fs_grid = 20 Hz` :
@@ -311,73 +299,128 @@ Après suppression des micro-épisodes < 0.10 s :
 shared_obj_ratio = mean_t( sameobj(t) )
 ```
 
+**Note (MOD-10) :** 4 statistiques robustes dans le CSV (`shared_obj_dur_median_s`, `_q25_s`, `_q75_s`, `_iqr_s`) — non retenues dans la régression core.
+
 **Fichiers :** `gaze/analyze_gaze.py::shared_object_metrics`
 
 ---
 
-### `shared_obj_dur_mean_s`
-**Description :** Durée moyenne par épisode de co-fixation partagée (secondes)
+### `gaze_entropy_dir_mean` *(canonique)*
+**Description :** Entropie directionnelle moyenne du regard (Shannon)
 
-Sur la même série booléenne `sameobj(t)` :
+Calculée par `analyze_gaze_directional.py` sur la distribution des directions de regard. Remplace `gaze_entropy_mean_participants` comme source principale.
+
+Un proxy dérivé est aussi calculé : `gaze_focus_proxy = 1.0 − gaze_entropy_dir_mean`.
+
+**Fichiers :** `gaze/analyze_gaze_directional.py`
+
+---
+
+### `gaze_entropy_mean_participants` *(legacy — fallback)*
+**Description :** Entropie moyenne du regard par objet fixé (Shannon, normalisée)
+
+Pour chaque participant :
 
 ```
-shared_obj_dur_mean_s = dur_total_co_fixation_s / n_episodes
+p_j = dur_fixation_objet_j / sum_j( dur_fixation_objet_j )
+H   = − sum_j( p_j × log2(p_j) )
+H_normalise = H / log2( N_objets_fixés )
 ```
 
-où `n_episodes` est le nombre d'épisodes continus de `sameobj(t) = 1`.
+Puis au niveau groupe :
 
-**Note (MOD-10) :** 4 statistiques robustes ajoutées en complément dans le CSV (`shared_obj_dur_median_s`, `_q25_s`, `_q75_s`, `_iqr_s`) — non retenues dans la régression core.
+```
+gaze_entropy_mean_participants = mean( H_normalise )  sur les participants
+```
 
-**Fichiers :** `gaze/analyze_gaze.py::shared_object_metrics`
+Valeur haute = regard dispersé ; valeur basse = regard focalisé.
+
+**Fichiers :** `gaze/analyze_gaze.py`
 
 ---
 
 ### `gaze_attention_coordination_idx`
 **Description :** Coordination de l'attention (composite gaze)
 
+Formule canonique (MOD-11 — analyse directionnelle) :
+
+```
+gaze_attention_coordination_idx =
+    nanmean([
+        z_gaze_convergence_ratio,          ← priorité 1
+        −1.0 × z_gaze_entropy_dir_mean     ← priorité 1
+    ])
+```
+
+Fallback si colonnes directionnelles absentes :
+
 ```
 gaze_attention_coordination_idx =
     nanmean([
         z_shared_obj_ratio,
-        z_mutual_gaze_ratio_mean_pairs,
         −1.0 × z_gaze_entropy_mean_participants
     ])
 ```
 
-Poids égaux (1/3 chacun). Le signe négatif de l'entropie reflète qu'un regard plus focalisé (faible entropie) indique une meilleure coordination.
+Le signe négatif de l'entropie reflète qu'un regard plus focalisé indique une meilleure coordination.
 
-**Note (MOD-9) :** ancien poids de l'entropie = −0.10 (différentiel empirique non validé). Remplacé par −1.0 (poids unitaires) en l'absence de validation empirique d'un poids différentiel.
+**Note (MOD-9) :** poids entropie = −0.10 → −1.0 (poids unitaires).  
+**Note (MOD-10) :** `z_mutual_gaze_ratio_mean_pairs` retiré (variance nulle sur groupes VR).  
+**Note (MOD-11) :** passage aux colonnes directionnelles (`gaze_convergence_ratio`, `gaze_entropy_dir_mean`). L'ancienne formule legacy est conservée dans `gaze_attention_coordination_idx_old`.
 
-Les 3 z-scores composants sont inclus dans le CSV de sortie.
+**Fichiers :** `hlf/compute_high_level_features.py::compute_composites`
 
-**Fichiers :** `hlf/compute_high_level_features.py`
+---
+
+### `gaze_joint_attention_idx_raw`
+**Description :** Indice d'attention conjointe brut (convergence + regard mutuel)
+
+```
+gaze_joint_attention_idx_raw = (gaze_convergence_ratio + mutual_gaze_ratio) / 2
+```
+
+Fallback : `(shared_obj_ratio + mutual_gaze_ratio_mean_pairs) / 2`
+
+**Fichiers :** `hlf/compute_high_level_features.py::compute_composites`
 
 ---
 
 ### `gaze_mutual_gaze_ratio`
-**Description :** Ratio global de regard mutuel (utilisé dans `gaze_attention_coordination_idx`)
+**Description :** Ratio global de regard mutuel
 
-Le code implémente une chaîne de fallback, mais **l'audit MOD-11 (2026-05-09) confirme que 100 % des groupes avec données gaze (N=12) utilisent le niveau 1**. Les 7 groupes restants (bim007, bim009, bim025, bim057, bim067, bim074, bim077) sont absents du CSV gaze brut — NaN structurel, pas un artifact de fallback.
-
-```
-gaze_mutual_gaze_ratio = mutual_gaze_ratio_mean_pairs
-```
-
-soit la moyenne des ratios de regard mutuel calculés par paire dyadique.
-
-La chaîne de fallback dans le code (niveaux 2–3 jamais atteints sur les groupes avec données) :
+Chaîne de fallback (priorité décroissante) :
 
 ```
 first_valid_series([
-    mutual_gaze_ratio_mean_pairs,      ← niveau 1 — utilisé pour 12/12 groupes gaze
+    mutual_gaze_ratio,            ← analyse directionnelle (canonique)
+    mutual_gaze_ratio_mean_pairs, ← legacy (paires dyadiques)
     pair_mutual_gaze_ratio_mean,
     mutual_gaze_dur_total_ratio_ref
 ])
 ```
 
-Variable VR-only (les lunettes eye-tracking permettent la détection du regard mutuel ; non disponible en PC). La colonne `gaze_mutual_gaze_ratio_source` trace la provenance ("mutual_gaze_ratio_mean_pairs" ou NaN si données absentes).
+Variable VR-only. La colonne `gaze_mutual_gaze_ratio_source` trace la provenance.
 
-**Fichiers :** `hlf/compute_high_level_features.py`
+**Fichiers :** `hlf/compute_high_level_features.py::add_final_feature_columns`
+
+---
+
+### `gaze_shared_visual_attention_ratio`
+**Description :** Ratio d'attention visuelle partagée (alias HLF)
+
+Chaîne de fallback :
+
+```
+first_valid_series([
+    gaze_convergence_ratio,          ← canonique (directionnelle)
+    pair_convergence_ratio_mean,
+    shared_obj_ratio,                ← legacy
+    shared_obj_dur_total_ratio_ref,
+    pair_shared_obj_ratio_mean
+])
+```
+
+**Fichiers :** `hlf/compute_high_level_features.py::add_final_feature_columns`
 
 ---
 
@@ -389,8 +432,10 @@ Ces variables sont calculées et présentes dans les CSV mais exclues du core se
 |----------|----------------|--------|
 | `audio_overlap_takeover_ratio` | `audio_successful_interruption_ratio` | alias renommage MOD-4 |
 | `audio_total_speaking_turns` | — | compte absolu, non normalisé |
-| `gaze_entropy` | `gaze_entropy_mean_participants` | alias `first_valid_series` |
-| `gaze_shared_visual_attention_ratio` | `shared_obj_ratio` | composite HLF, `\|r\| ≈ 1.0` |
+| `gaze_entropy` | `gaze_entropy_dir_mean` (ou `gaze_entropy_mean_participants` legacy) | alias `first_valid_series` |
+| `gaze_shared_visual_attention_ratio` | `gaze_convergence_ratio` (ou `shared_obj_ratio` legacy) | composite HLF, `\|r\| ≈ 1.0` |
+| `shared_obj_ratio` | `gaze_convergence_ratio` | variable legacy, remplacée par analyse directionnelle |
+| `gaze_entropy_mean_participants` | `gaze_entropy_dir_mean` | variable legacy, remplacée par analyse directionnelle |
 | `face_sync_pearson_global_idx` | `face_facial_synchrony` | redondance empirique attendue |
 | `affect_balance_occ` | `face_smile_ratio` | `\|r\| ≈ 0.99` |
 | `face_sadness_marker_ratio` | `face_negative_affect_ratio` | alias explicite MOD-6 |
@@ -407,5 +452,4 @@ Ces variables sont calculées et présentes dans les CSV mais exclues du core se
 | `scripts/analyse_inv/speech/compute_audio_features.py` | Agrégation groupe, aliases canoniques |
 | `scripts/analyse_inv/gaze/analyze_gaze.py` | Calculs gaze (entropie, co-fixation, regard mutuel) |
 | `scripts/analyse_inv/hlf/compute_high_level_features.py` | Composites face et gaze (synchronie, affect, coordination) |
-| `scripts/analyse_inv/CHANGELOG.md` | Historique MOD-1 à MOD-10 avec références |
-| `FORMULES_VARIABLES_CLES.md` | Formules détaillées performance, questionnaires, et formules amont gaze/face |
+| `scripts/analyse_inv/CHANGELOG.md` | Historique MOD-1 à MOD-11 avec références |
