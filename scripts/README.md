@@ -110,13 +110,13 @@ scripts/
 
 ```bash
 # Full pipeline
-python run_inv.py --data-dir ../data_e2 --out-dir ../results/INV
+python run_inv.py --data-dir <data_dir> --out-dir ../results/INV
 
 # Speech only
-python run_inv.py --data-dir ../data_e2 --inv speech --out-dir ../results/INV
+python run_inv.py --data-dir <data_dir> --inv speech --out-dir ../results/INV
 
 # Speech + gaze
-python run_inv.py --data-dir ../data_e2 --inv speech gaze --out-dir ../results/INV
+python run_inv.py --data-dir <data_dir> --inv speech gaze --out-dir ../results/INV
 
 # Recompute HLF from existing modality CSVs (no re-extraction needed)
 python run_inv.py --hlf-only \
@@ -131,15 +131,15 @@ Individual module execution:
 
 ```bash
 # Speech
-python analyse_inv/speech/analyze_audio.py ../data_e2 \
+python analyse_inv/speech/analyze_audio.py <data_dir> \
     --out ../results/INV/audio_features.csv
 
 # Gaze (group-level)
 python analyse_inv/gaze/analyze_gaze.py \
-    --data-dir ../data_e2 --out-dir ../results/INV/gaze
+    --data-dir <data_dir> --out-dir ../results/INV/gaze
 
 # Face
-python analyse_inv/face/analyze_aus_group.py ../data_e2 \
+python analyse_inv/face/analyze_aus_group.py <data_dir> \
     --out ../results/INV/face_emotion_metrics_all.csv
 
 # HLF fusion
@@ -236,14 +236,14 @@ python analyze_inv_structure.py --only-pruning-mode without   # results/without_
 
 ```bash
 # C-factor (Woolley et al., 2010)
-python analyse_TCI/TCI.py ../data_e2/data_TCI \
+python analyse_TCI/TCI.py <data_dir>/data_TCI \
     --out ../results/TCI/c_scores.csv \
     --out-wide ../results/TCI/c_scores_with_tasks.csv \
     --missing mean --profile --scatter --heatmap
 
 # Riedl indicators (skill, strategy, effort, congruence)
 python analyse_TCI/compute_team_indicators_rields.py \
-    --groups ../data_e2/data_TCI \
+    --groups <data_dir>/data_TCI \
     --c-scores ../results/TCI/c_scores.csv \
     --out-dir ../results/indices_collab \
     --effort-mode event_count \
@@ -262,7 +262,7 @@ cd analyse_questionnaire
 
 # Full analysis (reliability, descriptives, roles, plots, exploratory pruning)
 python main.py \
-    --data ../data_e2/results-survey.xlsx \
+    --data <data_dir>/results-survey.xlsx \
     --out ../../results/questionnaire \
     --mode all
 
@@ -345,22 +345,22 @@ results/merged_dataset/
 ```bash
 # Static snapshot at t=120s
 python visualisation_sociale/mirage_sociogram.py \
-    --group-id bim073 --modality VR --scenario S2 --timepoint T1 \
-    --data-dir ../data_e2 \
-    --out-dir ../results/visualisation_sociale/bim073 \
+    --group-id <group_id> --modality VR --scenario S2 --timepoint T1 \
+    --data-dir <data_dir> \
+    --out-dir ../results/visualisation_sociale/<group_id> \
     --snapshot-at 120
 
 # Lightweight GIF animation (1 frame per 10)
 python visualisation_sociale/mirage_sociogram.py \
-    --group-id bim073 --modality VR --scenario S2 --timepoint T1 \
-    --data-dir ../data_e2 \
-    --out-dir ../results/visualisation_sociale/bim073 \
+    --group-id <group_id> --modality VR --scenario S2 --timepoint T1 \
+    --data-dir <data_dir> \
+    --out-dir ../results/visualisation_sociale/<group_id> \
     --export-gif --frame-stride 10 --frame-dpi 90
 
 # Batch all VR groups
 python visualisation_sociale/run_all_vr_mirage_sociograms.py \
-    --data-dir ../data_e2 \
-    --out-dir ../results/visualisation_sociale_all_vr
+    --data-dir <data_dir> \
+    --out-dir ../results/visualisation_sociale/
 ```
 
 Gaze, JVA, and object positions are available in VR only. On PC, only speech and facial synchrony layers are active.
@@ -383,13 +383,6 @@ CSV format: separator `;`, decimal `,`, encoding UTF-8. `read_csv_eu()` handles 
 
 ---
 
-## Known Data Issues
+## Data Quality
 
-| Group | Issue |
-|-------|-------|
-| bim002 | No performance file, corrupted data |
-| bim032 | No performance file, missing Mod/Calc audio, no Lecteur marker |
-| bim065_2 | No performance file |
-| bim075 | No audio track, no markers, no performance file |
-
-Excluded automatically via `common.constants.EXCLUDED_GROUPS`.
+Groups with incomplete data (missing performance files, corrupted audio, absent markers) are excluded automatically. Exclusion criteria are defined in `common/constants.py` (`EXCLUDED_GROUPS`) and applied across all pipeline stages.

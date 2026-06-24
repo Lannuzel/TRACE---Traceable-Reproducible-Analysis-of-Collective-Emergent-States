@@ -20,9 +20,8 @@ The pipeline was developed in the context of a longitudinal study of **collectiv
 | Timepoints  | T1, T2                             |
 | Modalities  | VR, PC                             |
 | Scenarios   | S1 (room layout), S2 (BIM objects) |
-| Roles       | Calculator, Modeller, Reader       |
-| Groups      | Triads identified as `bimXXX`      |
-| Excluded    | bim002, bim032, bim065_2, bim075   |
+| Roles       | Three role-based positions per triad |
+| Groups      | Triads with a shared group identifier |
 
 ---
 
@@ -234,10 +233,10 @@ cd Longitudinale/scripts
 
 ```bash
 # All modalities
-python run_inv.py --data-dir ../data_e2 --out-dir ../results/INV
+python run_inv.py --data-dir <data_dir> --out-dir ../results/INV
 
 # Speech only
-python run_inv.py --data-dir ../data_e2 --inv speech --out-dir ../results/INV
+python run_inv.py --data-dir <data_dir> --inv speech --out-dir ../results/INV
 
 # Recompute HLF from existing modality CSVs
 python run_inv.py --hlf-only \
@@ -283,9 +282,9 @@ python rapport/v2/main.py \
 
 ```bash
 python visualisation_sociale/mirage_sociogram.py \
-    --group-id bim073 --modality VR --scenario S2 --timepoint T1 \
-    --data-dir ../data_e2 \
-    --out-dir ../results/visualisation_sociale/bim073 \
+    --group-id <group_id> --modality VR --scenario S2 --timepoint T1 \
+    --data-dir <data_dir> \
+    --out-dir ../results/visualisation_sociale/<group_id> \
     --snapshot-at 120
 ```
 
@@ -329,13 +328,6 @@ Python ≥ 3.10 required. OpenFace 2.x must be installed separately for facial A
 
 ---
 
-## Known Data Issues
+## Data Quality
 
-| Group | Issue |
-|-------|-------|
-| bim002 | No performance file, corrupted data |
-| bim032 | No performance file, missing audio (Mod/Calc), no Lecteur marker |
-| bim065_2 | No performance file |
-| bim075 | No audio track, no markers, no performance file |
-
-These groups are excluded automatically via `common.constants.EXCLUDED_GROUPS`.
+Groups with incomplete data (missing performance files, corrupted audio, absent markers) are excluded automatically. Exclusion criteria are defined in `common/constants.py` (`EXCLUDED_GROUPS`) and applied across all pipeline stages without manual intervention.
