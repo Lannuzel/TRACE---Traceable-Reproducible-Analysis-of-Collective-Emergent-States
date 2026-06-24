@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+
+# Résultats générés (ne pas versionner)
+results/
+
+# Dépendances vendorisées
+vendor/
+
+# Données brutes (fichiers lourds)
+*.wav
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.mp3
+
+# Fichiers de données non versionné par défaut (réintégrer si besoin)
+# results/performance_task/
+# results/INV/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# Matplotlib config locale
+.mplconfig
+
+# Notebooks Jupyter (outputs)
+*.ipynb_checkpoints/
+
+# Fichiers temporaires
+*.tmp
+*.bak
+*.orig
+_tmp_*/
