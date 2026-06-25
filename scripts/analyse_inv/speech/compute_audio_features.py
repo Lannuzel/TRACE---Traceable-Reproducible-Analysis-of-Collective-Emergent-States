@@ -215,7 +215,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
             nv = row.get("total_turns", np.nan)
             ov = row.get("total_turns_old", np.nan)
             if pd.notna(nv) and pd.notna(ov) and nv > ov + 0.5:
-                print(
+                import logging; logging.debug(
                     f"[AUDIT MOD-1] total_turns_CA ({int(nv)}) > total_turns_IPU ({int(ov)}) "
                     f"for group {row.get('group_id', idx)} "
                     f"-- micro-segments fusionnes en tours CA valides (comportement attendu)."

@@ -318,22 +318,33 @@ python $SCRIPTS_DIR/visualisation_sociale/mirage_sociogram.py \
 
 ---
 
-## Configuration
+## Feature Configuration — `inv_features_config.py`
 
-**`scripts/config/inv_features_config.py`** is the single source of truth for all INV features. It defines:
+**`scripts/config/inv_features_config.py`** is the single source of truth governing which INV features enter each analysis stage. All report sections, PCA runs, and statistical regressions read their feature lists from this file — no feature selection happens ad hoc elsewhere.
 
-- Feature families (`audio`, `gaze`, `face`, `high_level`)
-- Priority ranks for redundancy pruning
-- `core` / `core_hl` flags — features displayed in reports
-- `REGRESSION_RETAINED_INV_FEATURES` + `REGRESSION_FORCE_INCLUDE` — stepwise regression candidates
+### What it controls
 
-Feature selection is intentionally dissociated by analysis context:
+| Constant / flag | Role |
+|-----------------|------|
+| `INV_FEATURES` | Master registry — one entry per feature with family, priority, flags, description |
+| `_AU_INDIVIDUAL_SUBSTRINGS` | AU-level features excluded from PCA and regression (too granular) |
+| `_EXCLUDED_EXACT_NAMES` | Variables explicitly excluded by name (redundant, non-analytical, or legacy) |
+| `EXCLUDE_SUFFIXES / EXCLUDE_PREFIXES` | Pattern-based exclusion (`_old`, `_source`, `z_`, `log_`, …) |
+| `PRUNING_PROTECTED_PAIRS` | Pairs kept together even when |r| > pruning threshold |
+| `REDUNDANCY_CORR_THRESHOLD` | Correlation threshold for hard pruning (default 0.85) |
+| `CORE_RIEDL_COLS` | Riedl team indicators used as Y columns in INV↔CI matrices |
 
-| Context | Selection mechanism |
-|---------|---------------------|
-| Report | `core` / `core_hl` flags + `report_preferred` |
-| PCA | `FEATURE_PRIORITY` ranks |
-| Regression | `REGRESSION_RETAINED_INV_FEATURES` ∩ `inv_pruned_features.csv` (kept=1) |
+### How feature selection works per context
+
+Feature selection is **intentionally dissociated** across three analytical contexts — a feature can be in the report without being in the regression, or vice versa:
+
+| Context | Mechanism | Where defined |
+|---------|-----------|---------------|
+| **Report (descriptive blocks)** | `core` / `core_hl` flags + `report_preferred` — defines which features appear in each modality section | `INV_FEATURES` entries |
+| **PCA** | `FEATURE_PRIORITY` rank — lower rank = kept when a redundant pair must be pruned | `INV_FEATURES` entries |
+| **Stepwise regression** | `REGRESSION_RETAINED_INV_FEATURES` ∩ `inv_pruned_features.csv` (`kept=1`) + `REGRESSION_FORCE_INCLUDE` override | Top-level lists |
+
+The pruning pipeline (`analyze_inv_structure.py`) writes `inv_pruned_features.csv` with a `kept` column. The report's regression stage reads this file and intersects it with `REGRESSION_RETAINED_INV_FEATURES` to get the final candidate set. `REGRESSION_FORCE_INCLUDE` can re-inject specific variables regardless of pruning outcome.
 
 ---
 

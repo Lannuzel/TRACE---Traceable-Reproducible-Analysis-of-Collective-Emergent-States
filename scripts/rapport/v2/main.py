@@ -2630,14 +2630,15 @@ def infer_bim(val: str) -> str | None:
     return m.group(1) if m else None
 
 def debug_timepoint(df: pd.DataFrame, name: str):
+    import logging
     if df is None or df.empty:
-        print(f"[DEBUG] {name}: empty")
+        logging.debug(f"{name}: empty")
         return
     cols = list(df.columns)
-    print(f"[DEBUG] {name}: shape={df.shape}")
-    print(f"[DEBUG] {name}: has_timepoint={'timepoint' in cols}")
+    logging.debug(f"{name}: shape={df.shape}")
+    logging.debug(f"{name}: has_timepoint={'timepoint' in cols}")
     if "timepoint" in cols:
-        print(f"[DEBUG] {name}: timepoint values={df['timepoint'].astype(str).value_counts(dropna=False).to_dict()}")
+        logging.debug(f"{name}: timepoint values={df['timepoint'].astype(str).value_counts(dropna=False).to_dict()}")
 
 # ===============================
 # INV RÉCAP DISPONIBILITÉ
@@ -2777,7 +2778,7 @@ def render_inv_section(
         if icols_filtered:
             n_dropped = len(icols) - len(icols_filtered)
             if n_dropped > 0:
-                print(f"  [PRUNING] {inv_label}: {n_dropped} features redondantes supprimées")
+                import logging; logging.info(f"[PRUNING] {inv_label}: {n_dropped} features redondantes supprimees")
             icols = icols_filtered
 
     if not icols:
@@ -3120,11 +3121,12 @@ def build_inv_stepwise_dataset(
     blocks: list[pd.DataFrame] = []
     predictor_groups: dict[str, list[str]] = {}
 
+    import logging
     pruned_kept: set[str] = set(inv_pruned_features or [])
     if pruned_kept:
-        print(f"[INV stepwise] Features prunées kept=1 : {len(pruned_kept)}")
+        logging.info(f"[INV stepwise] Features prunees kept=1 : {len(pruned_kept)}")
     else:
-        print("[INV stepwise] inv_pruned_features.csv absent — fallback whitelist")
+        logging.info("[INV stepwise] inv_pruned_features.csv absent - fallback whitelist")
 
     # Candidats pour _supplement : toutes les features prunées (ou whitelist si demandé)
     face_candidates = list(REGRESSION_RETAINED_INV_FEATURES["face"]) if use_regression_whitelist else [
@@ -3153,10 +3155,10 @@ def build_inv_stepwise_dataset(
             whitelist = set(preferred_cols)
             if pruned_kept:
                 selected = pruned_kept & whitelist
-                print(f"[INV stepwise][{label}] Whitelist activée — après filtre regression_preferred : {len(selected)}")
+                logging.info(f"[INV stepwise][{label}] Whitelist activee - apres filtre regression_preferred : {len(selected)}")
             else:
                 selected = whitelist.copy()
-                print(f"[INV stepwise][{label}] Fallback whitelist : {len(selected)}")
+                logging.info(f"[INV stepwise][{label}] Fallback whitelist : {len(selected)}")
         else:
             # Mode défaut : features prunées kept=1 filtrées par famille du bloc courant
             _family_map = {
@@ -3170,10 +3172,10 @@ def build_inv_stepwise_dataset(
                     f for f in pruned_kept
                     if infer_family_from_name(f) in _allowed_families
                 }
-                print(f"[INV stepwise][{label}] Features prunées kept=1 (famille {_allowed_families}) : {len(selected)}")
+                logging.info(f"[INV stepwise][{label}] Features prunees kept=1 (famille {_allowed_families}) : {len(selected)}")
             else:
                 selected = set(preferred_cols)
-                print(f"[INV stepwise][{label}] Fallback whitelist : {len(selected)}")
+                logging.info(f"[INV stepwise][{label}] Fallback whitelist : {len(selected)}")
 
         # Réinjection forcée de variables métier critiques
         reinjected: list[str] = []
@@ -3182,13 +3184,11 @@ def build_inv_stepwise_dataset(
                 selected.add(feat)
                 reinjected.append(feat)
         if reinjected:
-            print(f"[INV stepwise][{label}] Réinjectées via REGRESSION_FORCE_INCLUDE : {reinjected}")
+            logging.info(f"[INV stepwise][{label}] Reinjection REGRESSION_FORCE_INCLUDE : {reinjected}")
 
-        # Conserver seulement les colonnes réellement présentes, dans l'ordre preferred_cols
-        # puis features prunées hors whitelist
         missing = sorted(f for f in selected if f not in clean.columns)
         if missing:
-            print(f"[INV stepwise][{label}] Absentes du dataframe (ignorées) : {missing}")
+            logging.info(f"[INV stepwise][{label}] Absentes du dataframe (ignorees) : {missing}")
 
         if use_regression_whitelist:
             avail = [f for f in preferred_cols if f in selected and f in clean.columns]
@@ -3198,7 +3198,7 @@ def build_inv_stepwise_dataset(
         for feat in REGRESSION_FORCE_INCLUDE:
             if feat in selected and feat in clean.columns and feat not in avail:
                 avail.append(feat)
-        print(f"[INV stepwise][{label}] Features finales pour régression : {avail}")
+        logging.info(f"[INV stepwise][{label}] Features finales pour regression : {avail}")
 
         if not avail:
             continue

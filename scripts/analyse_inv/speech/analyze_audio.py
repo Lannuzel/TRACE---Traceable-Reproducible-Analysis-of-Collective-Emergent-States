@@ -89,7 +89,7 @@ def detect_beep(path: Path,
     idx = int(np.argmax(abs_y))
     t_bip = idx / sr
     if debug:
-        print(f"[DEBUG] bip > {t_bip:.3f}s  (amp {abs_y[idx]:.2f})  {path.name}")
+        import logging; logging.debug(f"bip > {t_bip:.3f}s  (amp {abs_y[idx]:.2f})  {path.name}")
     return t_bip, sr
 
 def align_audio(path: Path, offset: float, ref: float, sr_out: int) -> np.ndarray:

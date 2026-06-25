@@ -215,6 +215,45 @@ first_valid_series([
 
 ---
 
+### `au4_active_pct_mean` et `au4_au15_coactive_pct_mean`
+**Description :** Activation du sourcil froncé (AU4) et co-activation AU4+AU15
+
+Ces deux métriques sont calculées par `face/analyze_aus_group.py` et agrégées à l'échelle groupe (moyenne sur les participants et sur les fenêtres temporelles).
+
+**AU4 = BrowLowerer (abaisseur des sourcils)** — Action Unit FACS impliquée dans les expressions de tristesse, de concentration et de colère.
+
+```
+au4_active_pct_mean    = proportion moyenne de frames où AU4 > seuil adaptatif
+au4_au15_coactive_pct_mean = proportion moyenne de frames où AU4 et AU15 sont co-actifs
+```
+
+AU4 intervient également dans la variable intermédiaire `sad_intensity` (non exportée directement dans les CSV HLF), définie comme :
+
+```
+sad_intensity = mean(AU1, AU4, AU15)
+             = mean(InnerBrowRaiser, BrowLowerer, LipCornerDepressor)
+```
+
+Cette variable intermédiaire sert de signal d'intensité tristesse avant binarisation par seuil adaptatif (même logique que `joy_intensity = mean(AU6, AU12)`). Elle alimente `sad_active_pct` et les métriques de synchronie `sad_sync_jaccard_mean`.
+
+La co-activation `au4_au15_coactive` (BrowLowerer + LipCornerDepressor) est un marqueur FACS de tristesse complémentaire à `au15_au17_coactive` (utilisé dans `face_negative_affect_ratio`).
+
+**Tableau des Action Units utilisées dans le pipeline :**
+
+| AU | Nom FACS | Muscle | Rôle dans le pipeline |
+|----|----------|--------|-----------------------|
+| AU1 | InnerBrowRaiser | Frontal (pars medialis) | Composant de `sad_intensity` |
+| AU4 | BrowLowerer | Corrugateur du sourcil | `au4_active_pct_mean`, `au4_au15_coactive_pct_mean`, `sad_intensity` |
+| AU6 | CheekRaiser | Orbicularis oculi | Composant de `joy_intensity`, `face_smile_ratio` |
+| AU12 | LipCornerPuller | Zygomaticus major | Composant de `joy_intensity`, `face_smile_ratio` |
+| AU15 | LipCornerDepressor | Depressor anguli oris | `face_negative_affect_ratio`, `au4_au15_coactive_pct_mean`, `sad_intensity` |
+| AU17 | ChinRaiser | Mentalis | `face_negative_affect_ratio` |
+
+**Fichiers :** `face/analyze_aus_group.py` (lignes 101, 109, 132, 143, 211, 225, 229)  
+**Référence :** Ekman & Friesen (1978), *Facial Action Coding System*
+
+---
+
 ### `face_smile_ratio`
 **Description :** Ratio moyen de sourire (Duchenne)
 

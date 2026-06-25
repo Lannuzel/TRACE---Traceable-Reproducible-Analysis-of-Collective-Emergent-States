@@ -115,9 +115,9 @@ def load_group_gaze(group_dir: str) -> pd.DataFrame:
             if not dfp.empty:
                 all_parts.append(dfp)
             else:
-                print(f"[WARN] Données gaze vides après parsing: {group_dir}/{p}")
+                import logging; logging.warning(f"Données gaze vides après parsing: {group_dir}/{p}")
         except Exception as e:
-            print(f"[WARN] Échec parsing {eye_file} : {e}")
+            import logging; logging.warning(f"Échec parsing {eye_file} : {e}")
 
     if not all_parts:
         raise RuntimeError(f"Aucune donnée gaze valide trouvée dans {group_dir}")
@@ -586,7 +586,7 @@ def transition_prob_gaze_to_speech(
 def run_one_group(group_dir: str, args) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     gaze = load_group_gaze(group_dir)
     if gaze.empty:
-        print(f"[WARN] {group_dir}: aucune donnée gaze exploitable")
+        import logging; logging.warning(f"{group_dir}: aucune donnée gaze exploitable")
         return None, None, None
 
     fix = detect_fixations_per_participant(gaze, min_fix=args.min_fix)
@@ -596,7 +596,7 @@ def run_one_group(group_dir: str, args) -> Tuple[pd.DataFrame, pd.DataFrame, pd.
     t0 = args.t0 if args.t0 is not None else t_min
     t1 = args.t1 if args.t1 is not None else t_max
     if t1 <= t0:
-        print(f"[WARN] {group_dir}: t0/t1 invalides (t0={t0}, t1={t1})")
+        import logging; logging.warning(f"{group_dir}: t0/t1 invalides (t0={t0}, t1={t1})")
         return None, None, None
 
     interaction_dur = float(t1 - t0)
@@ -612,7 +612,7 @@ def run_one_group(group_dir: str, args) -> Tuple[pd.DataFrame, pd.DataFrame, pd.
         try:
             turns_df = load_speaking_turns_csv(args.turns_file)
         except Exception as e:
-            print(f"[WARN] Speaking turns invalid ({args.turns_file}) : {e}")
+            import logging; logging.warning(f"Speaking turns invalid ({args.turns_file}) : {e}")
             turns_df = None
 
     group_id = os.path.basename(group_dir)
