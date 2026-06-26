@@ -76,15 +76,15 @@ INV_EXCLUDED_SUBSTRINGS = ("_median",)
 # AU individuelles (ex. au6_active_pct_mean) — exclues des analyses prédictives
 # et de la PCA. Les variables de synchronie AU (au_sync_*) sont conservées.
 _AU_INDIVIDUAL_SUBSTRINGS = (
-    "au6_active_pct",
-    "au12_active_pct",
-    "au1_active_pct",
-    "au4_active_pct",
-    "au15_active_pct",
-    "au17_active_pct",
-    "au6_au12_coactive_pct",
-    "au4_au15_coactive_pct",
-    "au15_au17_coactive_pct",
+    # "au6_active_pct",
+    # "au12_active_pct",
+    # "au1_active_pct",
+    # "au4_active_pct",
+    # "au15_active_pct",
+    # "au17_active_pct",
+    # "au6_au12_coactive_pct",
+    # "au4_au15_coactive_pct",
+    # "au15_au17_coactive_pct",
 )
 
 # Variables exclues par nom exact — redondantes ou non-analytiques
@@ -111,19 +111,19 @@ _EXCLUDED_EXACT_NAMES = frozenset({
     # Audio : préférer audio_avg_speaking_turn_duration_s
     # "audio_pause_ratio",
     # "audio_floor_exchange_pause_mean_s",
-    "audio_total_speaking_turns",
-    "mean_pause_s",
-    "n_floor_exchanges",
-    # Audio : préférer audio_participation_entropy
-    "audio_turn_balance_cv",
-    "max_speech_ratio",
-    # Gaze directionnelle : préférer gaze_convergence_episode_rate_per_min_ref
-    "gaze_convergence_n_episodes",
-    "gaze_convergence_n_episodes_per_s",
-    "gaze_convergence_dur_total_ratio_ref",
-    "gaze_convergence_episode_rate_per_min_ref",
-    "gaze_attention_coordination_idx",
-    "gaze_attention_coordination_idx_old",
+    # "audio_total_speaking_turns",
+    # "mean_pause_s",
+    # "n_floor_exchanges",
+    # # Audio : préférer audio_participation_entropy
+    # "audio_turn_balance_cv",
+    # "max_speech_ratio",
+    # # Gaze directionnelle : préférer gaze_convergence_episode_rate_per_min_ref
+    # "gaze_convergence_n_episodes",
+    # "gaze_convergence_n_episodes_per_s",
+    # "gaze_convergence_dur_total_ratio_ref",
+    # "gaze_convergence_episode_rate_per_min_ref",
+    # "gaze_attention_coordination_idx",
+    # "gaze_attention_coordination_idx_old",
     # Legacy (ancienne analyse par objet)
     "shared_obj_n_episodes",
     "shared_obj_n_episodes_per_s",
@@ -133,7 +133,15 @@ _EXCLUDED_EXACT_NAMES = frozenset({
 })
 
 REGRESSION_FORCE_INCLUDE: list[str] = [
-    #"gaze_shared_visual_attention_ratio",
+    # Remplaçants directionnels des legacy gaze_shared_visual_attention_ratio / gaze_entropy_mean_participants :
+    # - gaze_convergence_ratio  (priorité 30 — équivalent directionnel de gaze_shared_visual_attention_ratio)
+    # - gaze_entropy_dir_mean   (priorité 31 — équivalent directionnel de gaze_entropy_mean_participants)
+    # À décommenter si le pruning les élimine à tort :
+    # "gaze_convergence_ratio",
+    # "gaze_entropy_dir_mean",
+    # "face_negative_affect_extended_ratio",   # affect négatif élargi (AU15+AU17, AU4+AU15, AU1)
+    # Legacy (ancienne analyse objet — plus utilisées) :
+    # "gaze_shared_visual_attention_ratio",
     # "gaze_entropy_mean_participants",
     # "log_gaze_shared_obj_episode_dur_mean_s",
 ]
@@ -147,6 +155,11 @@ REGRESSION_FORCE_INCLUDE: list[str] = [
 PRUNING_PROTECTED_PAIRS: frozenset[frozenset[str]] = frozenset({
     #frozenset({"audio_total_speaking_turns", "audio_overlap_speaking_ratio"}),
     # frozenset({"audio_participation_entropy", "audio_avg_speaking_turn_duration_s"}),
+    # Paire directionnelle : convergence (quantité) et entropie (dispersion) sont complémentaires
+    frozenset({"gaze_convergence_ratio", "gaze_entropy_dir_mean"}),
+    # Face : affect négatif élargi vs classique — complémentaires, ne pas pruner
+    frozenset({"face_negative_affect_ratio", "face_negative_affect_extended_ratio"}),
+    # Legacy (ancienne analyse objet)
     frozenset({"gaze_entropy_dir_mean", "gaze_shared_visual_attention_ratio"}),
     frozenset({"gaze_entropy_mean_participants", "gaze_shared_visual_attention_ratio"}),  # legacy
     # frozenset({"gaze_entropy_mean_participants", "log_gaze_shared_obj_episode_dur_mean_s"}),
@@ -441,7 +454,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "z_total_turns(−0.33) + z_overlap_ratio(−0.20) + z_interruptions_rate(−0.20) "
             "+ z_joy_tri_rate(+0.10) + z_sad_tri_occupancy(−0.10) "
             "+ z_gaze_to_speaker(+0.10) + z_transition_prob(+0.10) "
-            "+ z_gaze_entropy(−0.10) "
+            "+ z_gaze_entropy_dir_mean(−0.10) "
             "— compute_high_level_features.py"
         ),
         "reason": "Indice theory-driven ; non estimé empiriquement",
@@ -835,6 +848,32 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "Si indisponible, la provenance effective est tracée dans "
             "face_negative_affect_ratio_source. "
             "au15_au17_coactive_pct_mean est documenté comme redondant avec cette feature."
+        ),
+    },
+    "face_negative_affect_extended_ratio": {
+        "family": "face",
+        "priority": 23,
+        "core": True,
+        "core_hl": True,
+        "redundant_with": ["face_negative_affect_ratio"],
+        "drop_if_redundant": False,
+        "regression_preferred": False,
+        "report_preferred": True,
+        "reference": "Ekman & Friesen (1978) — Facial Action Coding System",
+        "description": "Affect négatif élargi (AU15+AU17, AU4+AU15, AU1 — nanmean)",
+        "calc_method": (
+            "MOD-12 (2026-06) : nanmean(au15_au17_coactive_pct_mean, au4_au15_coactive_pct_mean, "
+            "au1_active_pct_mean). Intègre le marqueur de tristesse classique (AU15+AU17), "
+            "la composante frontale-labiale (AU4+AU15, BrowLowerer+LipCornerDepressor) "
+            "et le releveur interne du sourcil (AU1, InnerBrowRaiser). "
+            "Source tracée dans face_negative_affect_extended_ratio_source "
+            "— compute_high_level_features.py"
+        ),
+        "reason": (
+            "Complément de face_negative_affect_ratio : version élargie incluant AU4 et AU1 "
+            "pour capter la composante frontale de la détresse (sourcils froncés + relevés internes). "
+            "Non redondant avec face_negative_affect_ratio (r attendu ~0.7–0.9 selon corpus). "
+            "drop_if_redundant=False : à conserver en parallèle pour comparaison prédictive."
         ),
     },
     "face_smile_ratio": {
@@ -1517,11 +1556,11 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "drop_if_redundant": False,
         "regression_preferred": True,
         "report_preferred": True,
-        "reference": "analyze_gaze_directional.py",
+        "reference": "analyze_gaze.py",
         "description": "Ratio de temps où ≥2 participants regardent dans la même direction (< 20°)",
         "calc_method": (
             "Fraction du temps où au moins 2 participants ont un angle inter-direction < 20° "
-            "— analyze_gaze_directional.py (remplace shared_obj_ratio)"
+            "— analyze_gaze.py (remplace shared_obj_ratio)"
         ),
     },
     "gaze_convergence_n_episodes": {
@@ -1534,7 +1573,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Nombre d'épisodes de convergence directionnelle",
-        "calc_method": "Comptage des épisodes où gaze_convergence_ratio > 0 — analyze_gaze_directional.py",
+        "calc_method": "Comptage des épisodes où gaze_convergence_ratio > 0 — analyze_gaze.py",
     },
     "gaze_convergence_dur_total_s": {
         "family": "gaze",
@@ -1546,7 +1585,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Durée totale des épisodes de convergence directionnelle (s)",
-        "calc_method": "Somme des durées d'épisodes de convergence — analyze_gaze_directional.py",
+        "calc_method": "Somme des durées d'épisodes de convergence — analyze_gaze.py",
     },
     "gaze_convergence_mean_angle_deg": {
         "family": "gaze",
@@ -1558,7 +1597,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Angle moyen entre directions de regard lors des épisodes de convergence (°)",
-        "calc_method": "Moyenne des angles inter-directions lors des épisodes < 20° — analyze_gaze_directional.py",
+        "calc_method": "Moyenne des angles inter-directions lors des épisodes < 20° — analyze_gaze.py",
     },
     "mutual_gaze_ratio": {
         "family": "gaze",
@@ -1569,11 +1608,11 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "drop_if_redundant": False,
         "regression_preferred": True,
         "report_preferred": True,
-        "reference": "analyze_gaze_directional.py",
+        "reference": "analyze_gaze.py",
         "description": "Ratio de regard mutuel directionnel (A→tête B ET B→tête A simultanément)",
         "calc_method": (
             "Fraction du temps où l'angle entre DirCorr_A et (pos_B - pos_A) < 30° "
-            "ET l'angle entre DirCorr_B et (pos_A - pos_B) < 30° — analyze_gaze_directional.py"
+            "ET l'angle entre DirCorr_B et (pos_A - pos_B) < 30° — analyze_gaze.py"
         ),
     },
     "mutual_gaze_n_episodes": {
@@ -1586,7 +1625,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Nombre d'épisodes de regard mutuel directionnel",
-        "calc_method": "Comptage des épisodes de regard mutuel — analyze_gaze_directional.py",
+        "calc_method": "Comptage des épisodes de regard mutuel — analyze_gaze.py",
     },
     "mutual_gaze_dur_total_s": {
         "family": "gaze",
@@ -1598,7 +1637,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Durée totale des épisodes de regard mutuel directionnel (s)",
-        "calc_method": "Somme des durées de regard mutuel — analyze_gaze_directional.py",
+        "calc_method": "Somme des durées de regard mutuel — analyze_gaze.py",
     },
     "gaze_entropy_dir_mean": {
         "family": "gaze",
@@ -1609,11 +1648,11 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "drop_if_redundant": False,
         "regression_preferred": True,
         "report_preferred": True,
-        "reference": "analyze_gaze_directional.py",
+        "reference": "analyze_gaze.py",
         "description": "Entropie directionnelle moyenne (dispersion des azimuts en 16 bins de 22.5°)",
         "calc_method": (
             "Entropie de Shannon normalisée sur la distribution des azimuts (projection XZ) "
-            "en 16 bins — analyze_gaze_directional.py (remplace gaze_entropy_mean_participants)"
+            "en 16 bins — analyze_gaze.py (remplace gaze_entropy_mean_participants)"
         ),
     },
     "log_gaze_convergence_episode_dur_mean_s": {
@@ -1625,7 +1664,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "drop_if_redundant": True,
         "regression_preferred": False,
         "report_preferred": False,
-        "reference": "analyze_gaze_directional.py",
+        "reference": "analyze_gaze.py",
         "description": "log1p(durée totale convergence directionnelle) — pour régression",
         "calc_method": (
             "log1p(gaze_convergence_dur_total_s) — compute_high_level_features.py. "
@@ -1664,7 +1703,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     # =======================================================================
     "gaze_entropy_mean_participants": {
         "family": "gaze",
-        "priority": 30,
+        "priority": 91,
         "core": False,          # remplacée par gaze_entropy_dir_mean (analyse directionnelle)
         "core_hl": False,
         "redundant_with": ["gaze_entropy_dir_mean"],
@@ -1701,7 +1740,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     },
     "gaze_shared_obj_episode_dur_mean_s": {
         "family": "gaze",
-        "priority": 32,
+        "priority": 92,
         "core": False,          # legacy — remplacée par gaze_convergence_dur_total_s
         "core_hl": False,
         "redundant_with": ["gaze_convergence_dur_total_s"],
@@ -1718,7 +1757,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     },
     "log_gaze_shared_obj_episode_dur_mean_s": {
         "family": "gaze",
-        "priority": 31,
+        "priority": 93,
         "core": False,          # legacy — remplacée par log_gaze_convergence_episode_dur_mean_s
         "core_hl": False,
         "redundant_with": ["log_gaze_convergence_episode_dur_mean_s"],
@@ -1764,7 +1803,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         ),
         "reason": (
             "Représentant synthétique HL de la coordination visuelle ; "
-            "corrélé avec gaze_attention_coordination_idx (r=0.709) et gaze_entropy (r=-0.736) "
+            "corrélé avec gaze_attention_coordination_idx (r=0.709) et gaze_entropy_dir_mean (r=-0.736) "
             "— collinéarité documentée, maintenu comme indicateur core distinct"
         ),
     },
@@ -1923,7 +1962,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     },
     "shared_obj_episode_rate_per_min_ref": {
         "family": "gaze",
-        "priority": 31,
+        "priority": 94,
         "core": True,
         "core_hl": True,
         "redundant_with": ["shared_obj_n_episodes_per_s", "shared_obj_n_episodes"],
@@ -1934,7 +1973,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "et duration_min = interaction_dur_s_ref / 60 "
             "— compute_high_level_features.py"
         ),
-        "reason": "Indicateur INV_TAS dans la SEM ; core_hl=True pour propagation dans merged_master",
+        "reason": "Ancien indicateur INV_TAS (SEM legacy) ; remplacé par gaze_convergence_ratio dans INV_TAS MOD-11. core_hl=True conservé pour propagation dans merged_master.",
     },
     "pair_shared_obj_dur_mean_s_mean": {
         "family": "gaze",
@@ -1962,6 +2001,23 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "Moyenne inter-paires des durées moyennes des épisodes de regard mutuel "
             "(mutual_gaze_dur_total_s / mutual_gaze_n_episodes, agrégé par paire)"
         ),
+    },
+    "pair_convergence_ratio_mean": {
+        "family": "gaze",
+        "priority": 44,
+        "core": False,
+        "core_hl": False,
+        "redundant_with": ["gaze_convergence_ratio"],
+        "drop_if_redundant": True,
+        "regression_preferred": False,
+        "report_preferred": False,
+        "description": "Ratio de convergence directionnelle moyen par paire (agrégat dyadique de gaze_convergence_ratio)",
+        "calc_method": (
+            "Moyenne inter-paires du ratio de convergence directionnelle "
+            "(proportion du temps où les deux membres de la paire regardent dans une direction "
+            "< 20° d'écart) — compute_high_level_features.py"
+        ),
+        "reason": "Mesure dyadique complémentaire à gaze_convergence_ratio (niveau groupe)",
     },
     "mutual_gaze_n_episodes_sum_pairs": {
         "family": "gaze",

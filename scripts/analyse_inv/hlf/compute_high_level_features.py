@@ -120,7 +120,9 @@ def load_face(path: str) -> pd.DataFrame:
         "joy_mean_valid_ratio", "sad_mean_valid_ratio",
         "joy_active_pct_valid_ratio", "sad_active_pct_valid_ratio",
         "au6_active_pct_mean", "au12_active_pct_mean", "au15_active_pct_mean", "au17_active_pct_mean",
+        "au1_active_pct_mean", "au4_active_pct_mean",
         "au6_au12_coactive_pct_mean",
+        "au4_au15_coactive_pct_mean",
         "au15_au17_coactive_pct_mean",
         "au_sync_mean", "au_sync_jaccard_mean", "au_sync_pearson_mean",
     ]
@@ -198,7 +200,10 @@ def load_face(path: str) -> pd.DataFrame:
         "affect_balance_rate", "pos_neg_rate_ratio",
         "affect_sync_jaccard_contrast", "affect_sync_pearson_contrast",
         "au6_active_pct_mean", "au12_active_pct_mean", "au15_active_pct_mean", "au17_active_pct_mean",
-        "au6_au12_coactive_pct_mean", "au15_au17_coactive_pct_mean",
+        "au1_active_pct_mean", "au4_active_pct_mean",
+        "au6_au12_coactive_pct_mean",
+        "au4_au15_coactive_pct_mean",
+        "au15_au17_coactive_pct_mean",
         "au_sync_mean", "au_sync_jaccard_mean", "au_sync_pearson_mean",
         "sad_tri_rate_sqrt",
     ]
@@ -722,6 +727,27 @@ def add_final_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["face_negative_affect_ratio_old"] = df["face_negative_affect_ratio"]
         df["face_sadness_marker_ratio"] = df["face_negative_affect_ratio"]
 
+    # MOD-12 : affect négatif élargi — nanmean(AU15+AU17, AU4+AU15, AU1)
+    # Intègre BrowLowerer (AU4) et InnerBrowRaiser (AU1) en complément du marqueur classique.
+    _ext_parts = []
+    _ext_labels = []
+    for _col in ["au15_au17_coactive_pct_mean", "au4_au15_coactive_pct_mean", "au1_active_pct_mean"]:
+        if _col in df.columns:
+            _ext_parts.append(pd.to_numeric(df[_col], errors="coerce").values)
+            _ext_labels.append(_col)
+    if _ext_parts:
+        df["face_negative_affect_extended_ratio"] = nanmean_rows(np.vstack(_ext_parts))
+        df["face_negative_affect_extended_ratio_source"] = (
+            "nanmean(" + ",".join(_ext_labels) + ")"
+            if len(_ext_parts) > 1
+            else _ext_labels[0]
+        )
+        df.loc[pd.Series(df["face_negative_affect_extended_ratio"]).isna(),
+               "face_negative_affect_extended_ratio_source"] = "missing"
+    else:
+        df["face_negative_affect_extended_ratio"] = np.nan
+        df["face_negative_affect_extended_ratio_source"] = "missing"
+
     # MOD-5 : Pearson uniquement (Hess & Fischer 2013, Emotional mimicry as social regulation)
     # Ancien fallback multi-source conserve en _old
     if "face_facial_synchrony" in df.columns:
@@ -742,6 +768,7 @@ def add_final_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
         "audio_successful_interruption_ratio",
         "face_smile_ratio",
         "face_negative_affect_ratio",
+        "face_negative_affect_extended_ratio",
     ]:
         if c in df.columns:
             df[c] = clip01(df[c])
@@ -1102,7 +1129,12 @@ def make_compact_output(df: pd.DataFrame) -> pd.DataFrame:
         # --- Face ---
         "face_smile_ratio",
         "face_negative_affect_ratio",
+        "face_negative_affect_extended_ratio",
         "face_facial_synchrony",
+        # AU individuels (audit/PCA uniquement — exclues des analyses prédictives)
+        "au1_active_pct_mean",
+        "au4_active_pct_mean",
+        "au4_au15_coactive_pct_mean",
         # --- Composites TMS/affect ---
         "tms_credibility_idx",
         "tms_coordination_idx",
@@ -1118,6 +1150,7 @@ def make_compact_output(df: pd.DataFrame) -> pd.DataFrame:
         "audio_backchannel_rate_per_min_source",
         "face_smile_ratio_source",
         "face_negative_affect_ratio_source",
+        "face_negative_affect_extended_ratio_source",
         "face_facial_synchrony_source",
         # --- Diagnostics ---
         "n_missing_speech_core",
@@ -1157,6 +1190,7 @@ def make_missingness_summary(df: pd.DataFrame) -> pd.DataFrame:
         "audio_backchannel_rate_per_min",
         "face_smile_ratio",
         "face_negative_affect_ratio",
+        "face_negative_affect_extended_ratio",
         "face_facial_synchrony",
     ]
     final_feature_cols = [c for c in final_feature_cols if c in out.columns]

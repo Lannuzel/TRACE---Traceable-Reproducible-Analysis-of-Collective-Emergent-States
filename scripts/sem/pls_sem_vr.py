@@ -142,13 +142,13 @@ INPUT_COMPOSITE = "INPUT_composite"
 #TEST PCA SUR INV REGRESSION STEPWISE 2026-05-28
 REFINED_INV_COMPOSITES: dict[str, list[str]] = {
     # TAS comportemental : coordination attention visuelle et régulation des tours.
-    # Validation : audio_successful_interruption_ratio (PC3 = 0.524),
-    #              gaze_shared_visual_attention_ratio (PC3 = 0.500).
-    # audio_overlap_speaking_ratio et gaze_entropy_mean_participants
+    # Validation MOD-11 (2026-06) : analyse directionnelle (gaze_convergence_ratio remplace
+    #              gaze_shared_visual_attention_ratio basé sur objets BIM).
+    # audio_overlap_speaking_ratio et gaze_entropy_dir_mean
     # chargent négativement sur PC3 → à inverser lors du calcul z-score.
     "INV_TAS": [
         "audio_successful_interruption_ratio",  # PC3 +0.524
-        "gaze_shared_visual_attention_ratio",   # PC3 +0.500
+        "gaze_convergence_ratio",               # directionnelle — remplace gaze_shared_visual_attention_ratio (MOD-11)
         "audio_overlap_speaking_ratio",         # PC3 −0.440 → INVERSE
         "gaze_entropy_dir_mean",                # directionnelle (remplace gaze_entropy_mean_participants)
         "gaze_entropy_mean_participants",        # PC3 −0.440 → INVERSE (legacy fallback)
@@ -190,14 +190,13 @@ REFINED_INV_COMPOSITES: dict[str, list[str]] = {
 # Mise à jour : validations croisées PCA × régression stepwise.
 # ---------------------------------------------------------------------------
 INVERTED_COMPOSITE_INDICATORS: dict[str, set[str]] = {
-    # INV_TAS : coordination attentionnelle
+    # INV_TAS : coordination attentionnelle (MOD-11)
     # audio_overlap : confirmé négatif (PCA −0.440 ET β=−0.84 pour CRE).
     #   Ambigu pour SPE (β=+1.16, M9) mais modèle multicolinéaire → non retenu.
-    # gaze_entropy : CONFLIT — PCA −0.440 (inversion) vs β=+0.52 pour TSK
+    # gaze_entropy_dir_mean : CONFLIT — PCA −0.440 (inversion) vs β=+0.52 pour TSK
     #   (pas d'inversion). Inversion PCA maintenue provisoirement ; voir note 2.
-    # gaze_shared_visual_attention_ratio : NON inversé au niveau du composite
-    #   (feature = indicateur de coordination, même si β<0 pour performance).
-    #   Le signe négatif est un effet de médiation à interpréter au niveau du modèle.
+    # gaze_convergence_ratio : NON inversé (remplace gaze_shared_visual_attention_ratio MOD-11)
+    #   Indicateur de coordination positive → signe positif attendu dans le composite.
     "INV_TAS": {
         "audio_overlap_speaking_ratio",      # PCA −0.440 ✓, CRE β=−0.84 ✓
         "gaze_entropy_dir_mean",             # directionnelle (remplace gaze_entropy_mean_participants)
@@ -232,16 +231,15 @@ INVERTED_COMPOSITE_INDICATORS: dict[str, set[str]] = {
 # ---------------------------------------------------------------------------
 COMPOSITE_WEIGHTS: dict[str, dict[str, float]] = {
 
-    # PC3 – Coordination attentionnelle / TAS
-    # ⚠ gaze_shared_visual_attention_ratio : loading +0.500 MAIS β=−0.76/−0.77
-    #   pour performance → paradoxe VR documenté. Poids positif conservé
-    #   (indicateur de processus, pas de résultat). Interpréter via le
-    #   coefficient du modèle structural, pas le signe du composite.
+    # PC3 – Coordination attentionnelle / TAS (MOD-11 : gaze directionnelle)
+    # gaze_convergence_ratio : remplace gaze_shared_visual_attention_ratio (analyse objet BIM legacy).
+    #   Loading PCA estimé +0.363 (PC3 directionnelle) ; poids provisoire — recalibrer après
+    #   revalidation PCA avec dataset directionnelle complet.
     # ⚠ gaze_entropy_mean_participants : loading −0.440 MAIS β=+0.52 pour TSK
     #   → conflit non résolu. Poids PCA maintenu ; résoudre avant soumission.
     "INV_TAS": {
         "audio_successful_interruption_ratio":  0.524,   # PC3 +0.524 | perf β=+0.43 ✓
-        "gaze_shared_visual_attention_ratio":   0.500,   # PC3 +0.500 | perf β=−0.77 ⚠ paradoxe VR
+        "gaze_convergence_ratio":               0.363,   # directionnelle — MOD-11 (remplace gaze_shared_visual_attention_ratio)
         "audio_overlap_speaking_ratio":        -0.440,   # PC3 −0.440 | CRE β=−0.84 ✓ / SPE β=+1.16 ⚠
         "gaze_entropy_dir_mean":               -0.440,   # directionnelle (remplace gaze_entropy_mean_participants)
         "gaze_entropy_mean_participants":      -0.440,   # PC3 −0.440 | TSK β=+0.52 ❌ conflit (legacy)

@@ -139,7 +139,7 @@ def main():
 
     # Determine paths to scripts
     speech_script = SCRIPT_DIR / "analyse_inv" / "speech" / "analyze_audio.py"
-    gaze_script = SCRIPT_DIR / "analyse_inv" / "gaze" / "analyze_gaze_directional.py"
+    gaze_script = SCRIPT_DIR / "analyse_inv" / "gaze" / "analyze_gaze.py"
     face_script = SCRIPT_DIR / "analyse_inv" / "face" / "analyze_aus_group.py"
     hlf_script = SCRIPT_DIR / "analyse_inv" / "hlf" / "compute_high_level_features.py"
     inv_structure_script = SCRIPT_DIR / "analyse_inv" / "analyze_inv_structure.py"

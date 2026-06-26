@@ -30,8 +30,7 @@ scripts/
 │   │   ├── viewer.py                 # Turn timeline viewer
 │   │   └── viewer_annotated.py       # Annotated turn timeline viewer
 │   ├── gaze/
-│   │   ├── analyze_gaze.py           # Group-level gaze: JVA, shared attention, mutual gaze
-│   │   ├── analyze_gaze_directional.py  # Directional gaze toward partners and objects
+│   │   ├── analyze_gaze.py           # Directional gaze: convergence ratio, mutual gaze, entropy (VR)
 │   │   ├── diagnose_eyetracking.py   # Eye-tracking completeness diagnostic
 │   │   ├── reconstruct_eyetracking.py   # Missing gaze data reconstruction
 │   │   └── refine_yaw_eyetracking.py    # Yaw correction (MOD-16)
@@ -121,8 +120,8 @@ python run_inv.py --data-dir <data_dir> --inv speech gaze --out-dir ../results/I
 # Recompute HLF from existing modality CSVs (no re-extraction needed)
 python run_inv.py --hlf-only \
     --speech-csv ../results/INV/audio_features.csv \
-    --gaze-group-csv ../results/INV/gaze/ALL_metrics_overall.csv \
-    --gaze-pair-csv ../results/INV/gaze/ALL_metrics_pairs.csv \
+    --gaze-group-csv ../results/INV/gaze_directional/ALL_metrics_overall.csv \
+    --gaze-pair-csv ../results/INV/gaze_directional/ALL_metrics_pairs.csv \
     --face-csv ../results/INV/face_emotion_metrics_all.csv \
     --out-dir ../results/INV
 ```
@@ -134,19 +133,27 @@ Individual module execution:
 python analyse_inv/speech/analyze_audio.py <data_dir> \
     --out ../results/INV/audio_features.csv
 
-# Gaze (group-level)
+# Gaze (directional — VR only, no BIM mesh required)
+# Step 1: correct eye-tracking (frozen RayOrigin bug)
+python analyse_inv/gaze/reconstruct_eyetracking.py \
+    --data-dir <data_dir> --out-dir ../results/eyetracking_corrected
+python analyse_inv/gaze/refine_yaw_eyetracking.py \
+    --corrected-dir ../results/eyetracking_corrected
+# Step 2: directional gaze metrics
 python analyse_inv/gaze/analyze_gaze.py \
-    --data-dir <data_dir> --out-dir ../results/INV/gaze
+    --corrected-dir ../results/eyetracking_corrected \
+    --data-dir <data_dir> \
+    --out-dir ../results/INV/gaze_directional
 
-# Face
+# Face (AU-level + synchrony, 9 AU including au1/au4/au4_au15)
 python analyse_inv/face/analyze_aus_group.py <data_dir> \
     --out ../results/INV/face_emotion_metrics_all.csv
 
-# HLF fusion
+# HLF fusion (all three modalities required for complete output)
 python analyse_inv/hlf/compute_high_level_features.py \
     --speech ../results/INV/audio_features.csv \
-    --gaze-group ../results/INV/gaze/ALL_metrics_overall.csv \
-    --gaze-pair ../results/INV/gaze/ALL_metrics_pairs.csv \
+    --gaze-group ../results/INV/gaze_directional/ALL_metrics_overall.csv \
+    --gaze-pair ../results/INV/gaze_directional/ALL_metrics_pairs.csv \
     --face ../results/INV/face_emotion_metrics_all.csv \
     --out ../results/INV/high_level_features.csv
 ```
