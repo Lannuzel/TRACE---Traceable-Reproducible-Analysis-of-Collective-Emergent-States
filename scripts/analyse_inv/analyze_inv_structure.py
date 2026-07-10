@@ -45,7 +45,8 @@ Arguments :
     --mode              'all' (PC+VR, défaut) ou 'vr-only' (VR uniquement)
     --max-missing       Seuil max NaN par feature (défaut: 0.20)
     --min-cumvar        Variance cumulée min pour rétention (défaut: 0.70)
-    --prune-threshold   Seuil |r| pour suppression redondances (défaut: 0.80)
+    --prune-threshold   Seuil |r| pour suppression redondances
+                        (défaut = REDUNDANCY_CORR_THRESHOLD de inv_features_config.py)
     --min-row-completeness  [vr-only] Min valeurs non manquantes par ligne (défaut: 0.60)
 """
 
@@ -91,7 +92,14 @@ from config import (
     FEATURE_PRIORITY,
     AUDIO_ALIAS_PAIRS,
 )
-from config.inv_features_config import infer_family_from_name, is_excluded_inv_feature
+from config.inv_features_config import (
+    infer_family_from_name,
+    is_excluded_inv_feature,
+    assert_pruning_threshold,
+    is_near_zero_variance,
+    NEAR_ZERO_VARIANCE_CV_THRESHOLD,
+    NEAR_ZERO_VARIANCE_CANDIDATES,
+)
 
 # Import optionnel pour rotation varimax
 try:
@@ -569,6 +577,45 @@ def run_pca(X_scaled: np.ndarray, features: list, out_dir: Path, rotation: str =
 
 
 # ---------------------------------------------------------------------------
+# Analyse parallèle de Horn (1965) — critère de rétention robuste à p > n
+# ---------------------------------------------------------------------------
+
+def horn_parallel_analysis(
+    X_scaled: np.ndarray,
+    n_iter: int = 1000,
+    percentile: float = 95.0,
+    seed: int = 42,
+) -> tuple[np.ndarray, int]:
+    """Analyse parallèle de Horn : compare les eigenvalues observées à celles de
+    jeux de données aléatoires de MÊME dimension (n × p).
+
+    À p > n (cas VR : 17 features, 12 obs), le critère de Kaiser (eigenvalue > 1)
+    n'est PAS valide : la variance totale est répartie sur min(n-1, p) axes non nuls
+    et surestime systématiquement le nombre de composantes. Horn corrige ce biais en
+    ne retenant que les composantes dont l'eigenvalue observée dépasse le percentile
+    (95e) des eigenvalues obtenues sur des données aléatoires de même forme.
+
+    Retourne (seuils_horn_par_composante, n_composantes_retenues).
+    """
+    rng = np.random.default_rng(seed)
+    n, p = X_scaled.shape
+    k = min(n - 1, p)  # nombre d'axes non dégénérés
+    if k < 1:
+        return np.array([]), 0
+    rand_eigs = np.zeros((n_iter, k), dtype=float)
+    for i in range(n_iter):
+        rand = rng.standard_normal(size=(n, p))
+        rand = (rand - rand.mean(axis=0)) / (rand.std(axis=0, ddof=1) + 1e-12)
+        pca_r = PCA(n_components=k).fit(rand)
+        rand_eigs[i, :] = pca_r.explained_variance_
+    thresholds = np.percentile(rand_eigs, percentile, axis=0)
+
+    obs = PCA(n_components=k).fit(X_scaled).explained_variance_
+    n_retain = int(np.sum(obs > thresholds))
+    return thresholds, n_retain
+
+
+# ---------------------------------------------------------------------------
 # Étape 5 — Dimensions retenues
 # ---------------------------------------------------------------------------
 
@@ -578,23 +625,54 @@ def extract_dimensions(
     df_meta: pd.DataFrame,
     out_dir: Path,
     min_cumvar: float = 0.70,
+    X_scaled: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """
-    Sélection des composantes selon eigenvalue >1 (critère Kaiser)
-    OU variance cumulée ≥ min_cumvar.
-    Le dataset produit est prêt pour merge avec performanceanalyse_TCIquestionnaire.
+    Sélection des composantes retenues.
+
+    Critère PRINCIPAL : analyse parallèle de Horn (1965) — seule valide quand p > n.
+    Le critère de Kaiser (eigenvalue > 1) est reporté à titre indicatif mais
+    N'EST PAS utilisé pour la rétention à p > n (il surestime systématiquement le
+    nombre de composantes). La variance cumulée sert de garde-fou bas.
     """
     eigenvalues = pca.explained_variance_
     cumvar = np.cumsum(pca.explained_variance_ratio_)
 
     n_kaiser = int(np.sum(eigenvalues > 1.0))
     n_cumvar = int(np.searchsorted(cumvar, min_cumvar) + 1)
-    n_retain = max(n_kaiser, n_cumvar, 2)
-    n_retain = min(n_retain, scores.shape[1])
 
-    print(f"  Critère Kaiser (eigenvalue>1)         : {n_kaiser} composantes")
+    # --- Analyse parallèle de Horn (critère de rétention retenu) ---
+    n_horn = 0
+    horn_thresholds = np.array([])
+    n_obs = scores.shape[0]
+    n_feat = X_scaled.shape[1] if X_scaled is not None else eigenvalues.shape[0]
+    p_gt_n = n_feat >= n_obs
+    if X_scaled is not None:
+        horn_thresholds, n_horn = horn_parallel_analysis(X_scaled)
+        # Export du diagnostic Horn
+        _k = len(horn_thresholds)
+        horn_df = pd.DataFrame({
+            "component": [f"PC{i+1}" for i in range(_k)],
+            "eigenvalue_observed": eigenvalues[:_k],
+            "horn_threshold_p95": horn_thresholds,
+            "passes_horn": eigenvalues[:_k] > horn_thresholds,
+        })
+        horn_df.to_csv(out_dir / "pca_horn_parallel_analysis.csv", index=False)
+        print("[OK] pca_horn_parallel_analysis.csv")
+
+    print(f"  Critère Kaiser (eigenvalue>1)         : {n_kaiser} composantes"
+          f"{'  [INVALIDE à p>=n — indicatif seulement]' if p_gt_n else ''}")
     print(f"  Critère variance cumulée >={min_cumvar*100:.0f}%          : {n_cumvar} composantes")
-    print(f"  -> {n_retain} composantes retenues")
+    print(f"  Analyse parallèle de Horn (p95)       : {n_horn} composantes")
+
+    # Rétention : Horn si disponible, sinon fallback cumvar. Toujours ≥ 1.
+    if X_scaled is not None and n_horn >= 1:
+        n_retain = n_horn
+    else:
+        n_retain = max(n_cumvar, 1)
+    n_retain = min(n_retain, scores.shape[1])
+    print(f"  -> {n_retain} composantes retenues (critère : "
+          f"{'Horn' if (X_scaled is not None and n_horn >= 1) else 'variance cumulée (fallback)'})")
 
     pc_cols = [f"PC{i+1}" for i in range(n_retain)]
     dim_df = pd.DataFrame(scores[:, :n_retain], columns=pc_cols)
@@ -960,6 +1038,65 @@ BOOTSTRAP_RANDOM_SEED = 42
 
 
 # ---------------------------------------------------------------------------
+# Étape 3a — Filtre near-zero variance (variance quasi nulle sur le corpus)
+# ---------------------------------------------------------------------------
+
+def remove_near_zero_variance_features(
+    df_raw: pd.DataFrame,
+    features: list[str],
+    threshold: float = NEAR_ZERO_VARIANCE_CV_THRESHOLD,
+    out_dir: Path | None = None,
+) -> tuple[list[str], pd.DataFrame]:
+    """
+    révision post-audit VR N=12 — Exclut les features à variance quasi nulle
+    (coefficient de variation |SD/moyenne| < threshold) sur le corpus courant.
+
+    Contrairement au pruning corrélationnel, ce filtre est purement empirique :
+    la config expose le seuil et une liste de candidates connues
+    (NEAR_ZERO_VARIANCE_CANDIDATES), mais l'exclusion effective dépend des
+    données réellement chargées. On scanne TOUTES les features, pas seulement
+    les candidates : une feature near-zero variance n'apporte aucune information
+    à la PCA et gonfle artificiellement le ratio p (features) / N (observations).
+
+    Exporte : inv_near_zero_variance.csv (si out_dir fourni).
+    """
+    rows: list[dict] = []
+    dropped: list[str] = []
+    for feat in features:
+        if feat not in df_raw.columns:
+            continue
+        series = df_raw[feat]
+        s = pd.to_numeric(series, errors="coerce").dropna()
+        if len(s) > 1 and abs(float(s.mean())) > 1e-12:
+            cv = abs(float(s.std(ddof=1)) / float(s.mean()))
+        else:
+            cv = float("nan")
+        is_nzv = is_near_zero_variance(series, threshold=threshold)
+        if is_nzv:
+            dropped.append(feat)
+        rows.append({
+            "feature": feat,
+            "cv": round(cv, 5) if pd.notna(cv) else "",
+            "near_zero_variance": int(is_nzv),
+            "listed_candidate": int(feat in NEAR_ZERO_VARIANCE_CANDIDATES),
+        })
+
+    kept = [f for f in features if f not in dropped]
+
+    print(f"  [NZV] {len(features)} features -> {len(kept)} conservées "
+          f"({len(dropped)} à variance quasi nulle, CV < {threshold})")
+    for f in dropped:
+        listed = " (candidate documentée)" if f in NEAR_ZERO_VARIANCE_CANDIDATES else ""
+        print(f"    DROP-NZV  {f}{listed}")
+
+    if out_dir is not None and rows:
+        pd.DataFrame(rows).to_csv(out_dir / "inv_near_zero_variance.csv", index=False)
+        print("  [OK] inv_near_zero_variance.csv")
+
+    return kept, pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
 # Étape 3b — Hard pruning par corrélation (|r| > seuil)
 # ---------------------------------------------------------------------------
 
@@ -1000,6 +1137,16 @@ def remove_correlated_features(
         except ValueError:
             return len(FEATURE_PRIORITY)
 
+    # révision post-audit VR N=12 — Protection PAR FEATURE (et non par paire).
+    # Toute feature figurant dans au moins une paire de PRUNING_PROTECTED_PAIRS
+    # est protégée de TOUTE suppression par redondance, quelle que soit la paire
+    # qui la met en jeu. Corrige la contradiction observée sur
+    # audio_participation_entropy (protégée via turn_balance_cv, mais supprimée
+    # par sa redondance avec audio_total_speaking_turns).
+    protected_features: set[str] = set()
+    for _pair in PRUNING_PROTECTED_PAIRS:
+        protected_features.update(_pair)
+
     # Pairs triées par |r| décroissant
     upper = corr.abs().where(np.triu(np.ones(corr.shape), k=1).astype(bool))
     pairs = (
@@ -1019,6 +1166,24 @@ def remove_correlated_features(
         if feat_a in dropped or feat_b in dropped:
             continue
         if frozenset({feat_a, feat_b}) in PRUNING_PROTECTED_PAIRS:
+            continue
+
+        # révision post-audit VR N=12 — protection par feature :
+        # si les DEUX features sont protégées, la paire ne peut rien départager → skip.
+        # si UNE seule est protégée, on force la suppression de l'AUTRE (la protégée
+        # ne peut jamais être la victime), sans passer par les critères NaN/priorité.
+        a_protected = feat_a in protected_features
+        b_protected = feat_b in protected_features
+        if a_protected and b_protected:
+            continue
+        if a_protected or b_protected:
+            to_keep = feat_a if a_protected else feat_b
+            to_drop = feat_b if a_protected else feat_a
+            dropped.add(to_drop)
+            drop_reasons[to_drop] = (
+                f"|r|={abs_r:.3f} > {threshold} avec '{to_keep}' "
+                f"(protégée : '{to_keep}' figure dans PRUNING_PROTECTED_PAIRS)"
+            )
             continue
 
         nan_a = int(nan_counts.get(feat_a, 0))
@@ -1316,7 +1481,7 @@ def pca_by_inv_modality(
       3. Imputation médiane + standardisation
       4. PCA avec n_components = min(6, n_features, n_samples-1)
       5. Export variance expliquée, loadings, scree plot
-    6. Détection de redondance pairwise : |corr(feature_i, feature_j)| > 0.80
+    6. Détection de redondance pairwise : |corr(feature_i, feature_j)| > REDUNDANCY_CORR_THRESHOLD
     7. Bootstrap PCA : stabilité des composantes et des loadings
 
     Returns : dict {modality: {"pca": PCA, "loadings": DataFrame, ...}}
@@ -1462,7 +1627,7 @@ def pca_by_inv_modality(
         print(f"  [OK] pca_scree_{modality}.png")
 
         # --- Étape 1 : redondance pairwise via corrélation ---
-        # Critère demandé : |r| > 0.8 -> features redondantes.
+        # Critère : |r| > REDUNDANCY_CORR_THRESHOLD -> features redondantes.
         sub_valid = sub[feat_valid].apply(pd.to_numeric, errors="coerce")
         for feat_a, feat_b in combinations(feat_valid, 2):
             s_a = sub_valid[feat_a]
@@ -1941,6 +2106,22 @@ def run_inv_analysis_pipeline(
         print("[ERROR] Pas assez de features exploitables.")
         return
 
+    # 1b. Filtre near-zero variance (uniquement en mode pruning — filtre analytique)
+    # Doit être appliqué sur les données BRUTES (df) : la standardisation en étape 2
+    # ramène la moyenne à 0 et rend le coefficient de variation indéfini.
+    if apply_pruning:
+        print("\n[ÉTAPE 1b] Filtre near-zero variance (CV < "
+              f"{NEAR_ZERO_VARIANCE_CV_THRESHOLD})")
+        features_selected, _nzv_report = remove_near_zero_variance_features(
+            df_raw=df,
+            features=features_selected,
+            threshold=NEAR_ZERO_VARIANCE_CV_THRESHOLD,
+            out_dir=out_dir,
+        )
+        if len(features_selected) < 3:
+            print("[ERROR] Pas assez de features après filtre near-zero variance.")
+            return
+
     # 2. Préparation de la matrice
     print("\n[ÉTAPE 2] Préparation de la matrice (imputation, standardisation)")
     X_scaled, features_after_prep = prepare_matrix(df, features_selected)
@@ -2015,7 +2196,7 @@ def run_inv_analysis_pipeline(
 
     # 5. Extraction des dimensions retenues
     print("\n[ÉTAPE 5] Extraction des dimensions retenues")
-    dim_df, n_retain = extract_dimensions(pca, scores, df_meta, out_dir, min_cumvar=min_cumvar)
+    dim_df, n_retain = extract_dimensions(pca, scores, df_meta, out_dir, min_cumvar=min_cumvar, X_scaled=X_final)
 
     # 6. Clustering (sur features finales)
     print("\n[ÉTAPE 6] Clustering hiérarchique des features")
@@ -2159,8 +2340,10 @@ def main():
                     help="Seuil max de valeurs manquantes par feature (défaut 0.20)")
     ap.add_argument("--min-cumvar", type=float, default=0.70,
                     help="Variance cumulée minimale pour sélection des composantes (défaut 0.70)")
-    ap.add_argument("--prune-threshold", type=float, default=0.9,
-                    help="Seuil |r| pour le hard pruning des features redondantes (défaut 0.80)")
+    ap.add_argument("--prune-threshold", type=float, default=REDUNDANCY_CORR_THRESHOLD,
+                    help=f"Seuil |r| pour le hard pruning des features redondantes "
+                         f"(défaut = REDUNDANCY_CORR_THRESHOLD = {REDUNDANCY_CORR_THRESHOLD}, "
+                         f"source unique de vérité dans inv_features_config.py)")
     ap.add_argument("--mode", choices=["all", "vr-only"], default="all",
                     help="Mode d'analyse : 'all' (PC+VR, défaut) ou 'vr-only' (VR uniquement)")
     ap.add_argument("--min-row-completeness", type=float, default=0.60,
@@ -2177,6 +2360,11 @@ def main():
         help="Groupes à exclure (ex: bim015,bim023). Peut être répété.",
     )
     args = ap.parse_args()
+
+    # Le seuil de pruning corrélationnel a une source unique de vérité :
+    # REDUNDANCY_CORR_THRESHOLD dans inv_features_config.py. Émet un warning
+    # si l'utilisateur passe un override incohérent.
+    assert_pruning_threshold(args.prune_threshold)
 
     data_path = Path(args.data)
 

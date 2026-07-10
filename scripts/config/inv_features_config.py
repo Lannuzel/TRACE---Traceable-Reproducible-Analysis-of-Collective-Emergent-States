@@ -32,6 +32,14 @@ Règles de priorité pour le pruning :
 1. moins de NaN
 2. priorité métier (plus petit rang = conservé)
 3. nom plus court = plus canonique
+
+Seuil de pruning corrélationnel :
+- Le seuil de pruning corrélationnel EFFECTIF est fixé à 0.85
+  (`REDUNDANCY_CORR_THRESHOLD`). Toute mention d'un seuil différent dans les
+  rapports en aval (en-têtes annonçant 0.80, logs appliquant 0.90, etc.) est
+  un défaut de synchronisation à corriger DANS LE PIPELINE APPELANT, pas ici.
+  Cette valeur est l'unique source de vérité ; `validate_config()` émet un
+  warning si un override incohérent est détecté (voir `assert_pruning_threshold`).
 """
 
 from __future__ import annotations
@@ -39,6 +47,30 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
+
+
+# ============================================================================
+# HISTORIQUE — Révision post-audit pruning PCA VR (N=12)
+# ----------------------------------------------------------------------------
+# Cette révision applique les décisions issues de l'audit du pruning PCA
+# effectué en mode --inv-analysis-mode pruning sur le scope VR-only.
+#
+# Décisions principales :
+# 1. Seuil de pruning harmonisé à 0.85 (déclaration = exécution).
+# 2. gaze_attention_coordination_idx exclu de l'espace PCA (composite
+#    algébrique de constituants retenus).
+# 3. Convention rate/count inversée : rate = représentant canonique.
+# 4. Paire mean_pause_s / audio_backchannel_rate_per_min protégée du
+#    pruning corrélationnel (artefact suspecté à N=11).
+# 5. Variables near-zero variance identifiées (audit délégué au pipeline).
+#
+# Points non résolus (à trancher hors config) :
+# - Ratio N/p final reste ~2 obs/var : réduction supplémentaire ou
+#   repositionnement de la PCA en usage descriptif à discuter avec les
+#   encadrants.
+# - Cluster regard mutuel : arbitrage définitif du représentant unique
+#   demande une inspection empirique complémentaire.
+# ============================================================================
 
 
 # ============================================================================
@@ -65,7 +97,7 @@ ID_COLS = {
 }
 
 # Suffixes/préfixes à exclure d'une sélection analytique standard
-EXCLUDE_SUFFIXES = ("_source","_old", "_raw", "_zscore", "_zscored", "_z", "_log", "_sqrt", "_cube_root", "_median")
+EXCLUDE_SUFFIXES = ("_source","_old", "_raw", "_zscore", "_zscored", "_z", "_log", "_sqrt", "_cube_root", "_median", "_raw")
 EXCLUDE_PREFIXES = ("z_", "log_", "sqrt_", "cube_root_", "tms_")
 
 # Exclusions techniques supplémentaires (PCA + analyses prédictives)
@@ -76,15 +108,15 @@ INV_EXCLUDED_SUBSTRINGS = ("_median",)
 # AU individuelles (ex. au6_active_pct_mean) — exclues des analyses prédictives
 # et de la PCA. Les variables de synchronie AU (au_sync_*) sont conservées.
 _AU_INDIVIDUAL_SUBSTRINGS = (
-    # "au6_active_pct",
-    # "au12_active_pct",
-    # "au1_active_pct",
-    # "au4_active_pct",
-    # "au15_active_pct",
-    # "au17_active_pct",
-    # "au6_au12_coactive_pct",
-    # "au4_au15_coactive_pct",
-    # "au15_au17_coactive_pct",
+    "au6_active_pct",
+    "au12_active_pct",
+    "au1_active_pct",
+    "au4_active_pct",
+    "au15_active_pct",
+    "au17_active_pct",
+    "au6_au12_coactive_pct",
+    "au4_au15_coactive_pct",
+    "au15_au17_coactive_pct",
 )
 
 # Variables exclues par nom exact — redondantes ou non-analytiques
@@ -108,6 +140,15 @@ _EXCLUDED_EXACT_NAMES = frozenset({
     "affect_alignment_idx",
     "face_sad_intensity_mean",
     "face_sync_pearson_global_idx",
+    # révision post-audit VR N=12 — composite algébrique exclu de la PCA :
+    # gaze_attention_coordination_idx = nanmean([z_gaze_convergence_ratio,
+    # −1.0 × z_gaze_entropy_dir_mean]). Ses deux constituants (gaze_convergence_ratio,
+    # gaze_entropy_dir_mean) sont retenus séparément après pruning ; la PCA verrait
+    # alors trois fois la même information linéaire (triple comptage). Exclu de la
+    # PCA/analyses prédictives — reste utilisable en descriptif et SEM via
+    # CORE_HL_REPORT (la fiche est conservée dans INV_FEATURES).
+    "gaze_attention_coordination_idx",
+
     # Audio : préférer audio_avg_speaking_turn_duration_s
     # "audio_pause_ratio",
     # "audio_floor_exchange_pause_mean_s",
@@ -117,8 +158,19 @@ _EXCLUDED_EXACT_NAMES = frozenset({
     # # Audio : préférer audio_participation_entropy
     # "audio_turn_balance_cv",
     # "max_speech_ratio",
-    # # Gaze directionnelle : préférer gaze_convergence_episode_rate_per_min_ref
-    # "gaze_convergence_n_episodes",
+
+    # Gaze directionnelle — convention rate/count : on ne conserve dans la PCA que
+    # gaze_convergence_ratio (représentant canonique du construct convergence).
+    # Les dérivées count/durée absolue sont exclues car confondues avec la durée
+    # d'interaction (cf. audit VR N=12) : gaze_convergence_n_episodes (count),
+    # gaze_convergence_dur_total_s (durée absolue, |r|=0.852 avec le rate
+    # episode_rate_per_min_ref qu'elle absorbait — on tranche pour l'exclusion,
+    # le ratio normalisé restant porté par gaze_convergence_ratio), et
+    # gaze_convergence_episode_density_raw (variable d'audit _raw).
+    "gaze_convergence_episode_density_raw",
+    "gaze_convergence_n_episodes",
+    "gaze_convergence_dur_total_s",
+    "log_gaze_convergence_episode_dur_mean_s",
     # "gaze_convergence_n_episodes_per_s",
     # "gaze_convergence_dur_total_ratio_ref",
     # "gaze_convergence_episode_rate_per_min_ref",
@@ -130,7 +182,28 @@ _EXCLUDED_EXACT_NAMES = frozenset({
     "shared_obj_dur_q25_s",
     "shared_obj_dur_total_ratio_ref",
     "shared_obj_episode_rate_per_min_ref",
+    # révision post-audit VR N=12 — oubli corrigé : variable d'audit legacy
+    # (analyse par objet abandonnée) qui survivait au pruning et polluait
+    # l'espace analytique PCA. Exclue au même titre que ses sœurs shared_obj_*.
+    "shared_obj_episode_density_raw",
+    # NB — Cluster regard mutuel : l'exclusion de toutes les facettes mutual_gaze_* /
+    # pair_mutual_gaze_* SAUF mutual_gaze_ratio est gérée par une RÈGLE DE PRÉFIXE
+    # dans is_excluded_inv_feature() (voir MUTUAL_GAZE_KEEP_ONLY), pas par des noms
+    # exacts ici (le cluster a trop de facettes pour une liste nom par nom).
 })
+
+# ----------------------------------------------------------------------------
+# révision post-audit VR N=12 — Cluster regard mutuel : représentant unique
+# ----------------------------------------------------------------------------
+# Le regard mutuel est quasi absent en VR (ratio moyen ≈ 0.008). Le construct est
+# décliné en ~6 facettes (ratio, durée moyenne/totale, épisodes, taux, agrégats
+# dyadiques pair_*), faiblement corrélées entre elles (|r| < 0.85), donc non
+# départageables par le seul pruning corrélationnel. Pour N=12, on impose UN seul
+# représentant : mutual_gaze_ratio (directionnel VR-natif, core, regression_preferred).
+# Toute autre variable dont le nom commence par un de ces préfixes est exclue de la
+# PCA/analyses prédictives (elles restent dans les CSV d'audit high-level).
+MUTUAL_GAZE_EXCLUDE_PREFIXES = ("mutual_gaze_", "pair_mutual_gaze_")
+MUTUAL_GAZE_KEEP_ONLY = "mutual_gaze_ratio"
 
 REGRESSION_FORCE_INCLUDE: list[str] = [
     # Remplaçants directionnels des legacy gaze_shared_visual_attention_ratio / gaze_entropy_mean_participants :
@@ -153,21 +226,43 @@ REGRESSION_FORCE_INCLUDE: list[str] = [
 # Paires protégées du pruning — les deux features sont conservées même si |r| > seuil.
 # Utiliser quand deux variables mesurent des aspects distincts malgré une corrélation élevée.
 PRUNING_PROTECTED_PAIRS: frozenset[frozenset[str]] = frozenset({
-    #frozenset({"audio_total_speaking_turns", "audio_overlap_speaking_ratio"}),
-    # frozenset({"audio_participation_entropy", "audio_avg_speaking_turn_duration_s"}),
-    # Paire directionnelle : convergence (quantité) et entropie (dispersion) sont complémentaires
+    # révision post-audit VR N=12 — Cluster audio distribution/overlap :
+    # audio_total_speaking_turns, audio_overlap_speaking_ratio, audio_pause_ratio,
+    # audio_participation_entropy, audio_turn_balance_cv, max_speech_ratio sont
+    # mutuellement corrélées (|r|=0.67–0.89 à N=12). Les protéger deux à deux
+    # (surtout avec la protection PAR FEATURE) faisait survivre TOUT le cluster
+    # (5+ quasi-doublons) et dégradait le ratio N/p. Protections retirées : le
+    # pruning corrélationnel tranche par priorité (représentants canoniques =
+    # audio_overlap_speaking_ratio prio 2, audio_total_speaking_turns prio 4).
+    # Voir audit VR N=12.
+    # frozenset({"audio_total_speaking_turns", "audio_overlap_speaking_ratio"}),
+    # frozenset({"audio_pause_ratio", "audio_overlap_speaking_ratio"}),
+    # frozenset({"audio_participation_entropy", "audio_turn_balance_cv"}),
+    # frozenset({"audio_participation_entropy", "audio_overlap_speaking_ratio"}),
+
+    # Gaze — convergence (quantité) et entropie (dispersion) : complémentaires
     frozenset({"gaze_convergence_ratio", "gaze_entropy_dir_mean"}),
-    # Face : affect négatif élargi vs classique — complémentaires, ne pas pruner
+    
+    # # Face : affect négatif élargi vs classique — complémentaires, ne pas pruner
     frozenset({"face_negative_affect_ratio", "face_negative_affect_extended_ratio"}),
-    # Legacy (ancienne analyse objet)
-    frozenset({"gaze_entropy_dir_mean", "gaze_shared_visual_attention_ratio"}),
-    frozenset({"gaze_entropy_mean_participants", "gaze_shared_visual_attention_ratio"}),  # legacy
+    frozenset({"affect_balance_rate", "face_facial_synchrony"}),
+    
+    # # Legacy (ancienne analyse objet)
+    # frozenset({"gaze_entropy_dir_mean", "gaze_shared_visual_attention_ratio"}),
+    # frozenset({"gaze_entropy_mean_participants", "gaze_shared_visual_attention_ratio"}),  # legacy
+
     # frozenset({"gaze_entropy_mean_participants", "log_gaze_shared_obj_episode_dur_mean_s"}),
     # frozenset({"gaze_shared_obj_episode_dur_mean_s", "log_gaze_shared_obj_episode_dur_mean_s"}),
     # frozenset({"gaze_shared_visual_attention_ratio", "log_gaze_shared_obj_episode_dur_mean_s"}),
+
+    # révision post-audit VR N=12 — Corrélation empirique élevée à N=11 (r=0.928)
+    # probablement artefactuelle : les deux mesurent des dimensions conversationnelles
+    # conceptuellement indépendantes (silence collectif vs signaux d'écoute).
+    # Protégés du pruning corrélationnel pour éviter une suppression fragile de mean_pause_s.
+    # frozenset({"mean_pause_s", "audio_backchannel_rate_per_min"}),
 })
 
-REDUNDANCY_CORR_THRESHOLD = 0.85
+REDUNDANCY_CORR_THRESHOLD = 0.85  # révision post-audit VR N=12 — seuil EFFECTIF unique (voir docstring d'en-tête)
 
 # Optionnel : permet une évolution future par famille.
 FAMILY_REDUNDANCY_THRESHOLDS: dict[str, float] = {
@@ -176,6 +271,55 @@ FAMILY_REDUNDANCY_THRESHOLDS: dict[str, float] = {
     "gaze": REDUNDANCY_CORR_THRESHOLD,
     "tms": REDUNDANCY_CORR_THRESHOLD,
 }
+
+# ----------------------------------------------------------------------------
+# NEAR-ZERO VARIANCE — contrôle empirique délégué au pipeline
+# ----------------------------------------------------------------------------
+# révision post-audit VR N=12 :
+# Certaines features restent conceptuellement valides (susceptibles de varier
+# sur un autre corpus) mais présentent une variance quasi nulle sur le dataset
+# VR courant (N=12). Le fichier de config NE CONNAÎT PAS les données : il expose
+# uniquement un seuil et une liste de candidates. Le contrôle effectif (calcul du
+# CV réel puis exclusion éventuelle) est délégué au pipeline en aval, qui dispose
+# des séries observées.
+NEAR_ZERO_VARIANCE_CV_THRESHOLD = 0.05  # révision post-audit VR N=12 — CV < 5 % → variance vraiment plate.
+# NB : abaissé de 0.10 à 0.05 pour ne pas écarter des variables core/SEM à variabilité
+# faible mais non négligeable (gaze_entropy_dir_mean CV≈0.096, audio_participation_entropy
+# CV≈0.063). Ces dernières retombent, si redondantes, sous le pruning corrélationnel normal.
+
+# Candidates identifiées lors du diagnostic VR N=12 (audit délégué au pipeline) :
+# - face_negative_affect_extended_ratio : SD=0.002, moyenne=0.05 (CV ~4 %).
+# - gaze_convergence_mean_angle_deg      : bornée par le seuil de convergence à
+#   20°, plage empirique 12.4°–14.0° (SD=0.53°).
+# Ces fiches restent inchangées dans INV_FEATURES ; seul le contrôle empirique
+# en aval peut décider de les écarter sur ce corpus.
+NEAR_ZERO_VARIANCE_CANDIDATES: frozenset[str] = frozenset({
+    "face_negative_affect_extended_ratio",
+    "gaze_convergence_mean_angle_deg",
+})
+
+
+def is_near_zero_variance(
+    series: "pd.Series",
+    threshold: float = NEAR_ZERO_VARIANCE_CV_THRESHOLD,
+) -> bool:
+    """
+    Retourne True si la série a un coefficient de variation < seuil (variance
+    quasi nulle). Utilitaire délégué au pipeline en aval : la config n'a pas
+    accès aux données, l'appelant fournit la série observée.
+
+    CV = |SD / moyenne|. Retourne False si la série est vide, entièrement NaN,
+    ou de moyenne quasi nulle (CV indéfini → non discriminant).
+    """
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return False
+    mean = float(s.mean())
+    if abs(mean) < 1e-12:
+        return False
+    cv = abs(float(s.std(ddof=1)) / mean)
+    return cv < threshold
+
 
 ALLOWED_FAMILIES = {"audio", "face", "gaze", "tms"}
 
@@ -197,9 +341,12 @@ CORE_RIEDL_COLS = [
     "contribution_mean",
 ]
 
-# Suffixes/préfixes à exclure d'une sélection analytique standard
-EXCLUDE_SUFFIXES = ("_source",)
-EXCLUDE_PREFIXES = ("z_",)
+# NB (revue, log_gaze) : EXCLUDE_SUFFIXES/EXCLUDE_PREFIXES sont définis une seule
+# fois, ligne 100-101. Une redéfinition étroite (seulement "z_"/"_source") existait
+# ici et écrasait silencieusement la version large (incluant "log_", "sqrt_",
+# "cube_root_") importée par pca_inv.py — log_gaze_shared_obj_episode_dur_mean_s
+# et consorts n'étaient donc PAS exclus de la PCA malgré la doc du catalogue INV
+# qui l'affirmait. Supprimée pour lever la contradiction inter-rapports.
 
 # Association préfixe -> famille INV
 MODALITY_PREFIX: dict[str, list[str]] = {
@@ -292,6 +439,17 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     # =======================================================================
     # AUDIO — versions canoniques
     # =======================================================================
+    # révision post-audit VR N=12 — Convention rate/count :
+    # dans toute paire (rate_per_min, count_absolute), le rate est le représentant
+    # canonique (priorité plus basse). Les counts absolus sont conservés pour audit
+    # mais marqués drop_if_redundant=True. Justification : à N=12 avec des durées
+    # d'interaction variables entre groupes, un count brut est confondu avec la durée ;
+    # la rate normalisée est le représentant défendable.
+    #
+    # L'activation effective des suppressions documentées (drop_if_redundant=True)
+    # dépend du seuil de pruning (0.85, cf. REDUNDANCY_CORR_THRESHOLD) et de la
+    # présence de la feature canonique dans l'espace analytique. Voir audit VR N=12.
+    #
     # Le champ report_block="audio" sur ces features est purement documentaire.
     # Dans _derive_constants(), seule la valeur "speech" est testée explicitement ;
     # les features audio canoniques sont routées vers CORE_AUDIO via family="audio".
@@ -564,30 +722,38 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "priority": 93,
         "core": False,
         "core_hl": False,
-        "redundant_with": [],
-        "drop_if_redundant": False,
+        "redundant_with": ["interruptions_rate_per_min"],  # révision post-audit VR N=12
+        "drop_if_redundant": True,  # révision post-audit VR N=12 — count brut confondu avec la durée ; préférer le rate
         "description": "Nombre de tentatives d'interruptions overlap-based",
         "calc_method": (
             "Compte brut des tentatives d'interruption overlap-based "
             "(min_overlap=0.1 s, min_post_takeover=0.5 s) "
             "— analyze_audio.py"
         ),
-        "reason": "Compte brut utile pour audit ; la version normalisée est interruptions_rate_per_min",
+        "reason": (
+            "Compte brut utile pour audit ; la version normalisée canonique est "
+            "interruptions_rate_per_min. révision post-audit VR N=12 : count absolu "
+            "confondu avec la durée d'interaction (N=12), marqué drop_if_redundant=True."
+        ),
     },
     "n_successful_interruptions": {
         "family": "audio",
         "priority": 94,
         "core": False,
         "core_hl": False,
-        "redundant_with": [],
-        "drop_if_redundant": False,
+        "redundant_with": ["audio_successful_interruption_ratio"],  # révision post-audit VR N=12
+        "drop_if_redundant": True,  # révision post-audit VR N=12 — count brut confondu avec la durée ; préférer le ratio
         "description": "Nombre d'interruptions réussies overlap-based",
         "calc_method": (
             "Compte brut des interruptions réussies : tentative overlap-based "
             "ayant abouti à une prise de tour confirmée "
             "— analyze_audio.py"
         ),
-        "reason": "Compte brut utile pour audit ; complément du ratio d'interruptions réussies",
+        "reason": (
+            "Compte brut utile pour audit ; le représentant canonique normalisé est "
+            "audio_successful_interruption_ratio. révision post-audit VR N=12 : count "
+            "absolu confondu avec la durée d'interaction (N=12), marqué drop_if_redundant=True."
+        ),
     },
     "rapid_floor_takeovers_total": {
         "family": "audio",
@@ -651,7 +817,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
     },
     "interruptions_rate_per_min": {
         "family": "audio",
-        "priority": 99,
+        "priority": 8,  # révision post-audit VR N=12 — 99 → 8 : rate = représentant canonique (à côté de audio_successful_interruption_ratio)
         "core": False,
         "core_hl": False,
         "redundant_with": [],
@@ -663,12 +829,14 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         ),
         "reason": (
             "Construit canonique dérivé de n_attempted_interruptions / duration_s ; "
-            "distinct des rapid_floor_takeover_*"
+            "distinct des rapid_floor_takeover_*. révision post-audit VR N=12 : "
+            "promu représentant canonique de la paire (rate, count) — n_attempted_interruptions "
+            "est désormais drop_if_redundant=True."
         ),
     },
     "audio_participation_entropy": {
         "family": "audio",
-        "priority": 10,
+        "priority": 3,
         "core": True,
         "core_hl": True,
         "redundant_with": [],
@@ -695,19 +863,39 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "calc_method": "Alias direct de audio_participation_entropy",
         "reason": "Alias conservé pour compatibilité pipeline ; préférer audio_participation_entropy",
     },
+    # révision post-audit VR N=12 — Cluster distribution de parole (résultats empiriques) :
+    # - audio_turn_balance_cv : |r|=0.856 avec audio_participation_entropy (> seuil 0.85)
+    #   → empiriquement redondante, supprimée par le pruning. Fiche correcte
+    #     (redundant_with=["audio_participation_entropy"]).
+    # - max_speech_ratio : |r|=0.389 avec audio_participation_entropy (<< seuil)
+    #   → NON redondante, survit légitimement. Sa fiche a été corrigée
+    #     (redundant_with vidé, drop_if_redundant=False) — l'ancienne mention de
+    #     redondance était factuellement fausse et créait un écart config/rapport.
+    # audio_participation_entropy est le représentant canonique du cluster (protégé).
     "max_speech_ratio": {
         "family": "audio",
         "priority": 11,
         "core": False,
         "core_hl": False,
-        "redundant_with": ["participation_entropy"],
-        "drop_if_redundant": True,
+        # révision post-audit VR N=12 — redondance documentée retirée :
+        # empiriquement |r|(max_speech_ratio, audio_participation_entropy) = 0.389
+        # sur le corpus VR (N=12), bien SOUS le seuil 0.85. La feature n'est donc
+        # PAS redondante et survit légitimement au pruning. Ancienne fiche
+        # (redundant_with=["participation_entropy"], drop_if_redundant=True) était
+        # factuellement fausse : corrigée pour éviter l'écart config/rapport.
+        "redundant_with": [],
+        "drop_if_redundant": False,
+        "reference": "Contribution originale (pas de référence directe)",
         "description": "Ratio de parole du participant le plus actif",
         "calc_method": (
             "max des speech_ratio par rôle (speech_s_role / total_speech_s) "
             "— compute_audio_features.py"
         ),
-        "reason": "Représenté dans le core set par turn_balance_cv (pruning empirique |r|>REDUNDANCY_CORR_THRESHOLD)",
+        "reason": (
+            "Capte le déséquilibre extrême (dominance d'un locuteur), distinct de "
+            "audio_participation_entropy (distribution globale) : |r|≈0.39 à N=12, "
+            "non redondante empiriquement."
+        ),
     },
     "audio_turn_balance_cv": {
         "family": "audio",
@@ -784,6 +972,26 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "calc_method": "Alias direct de audio_backchannel_rate_per_min",
         "reason": "Alias de audio_backchannel_rate_per_min",
     },
+    "mean_pause_s": {
+        "family": "audio",
+        "priority": 58,  # révision post-audit VR N=12 — fiche ajoutée (requise par PRUNING_PROTECTED_PAIRS)
+        "core": False,
+        "core_hl": False,
+        "redundant_with": [],
+        "drop_if_redundant": False,
+        "description": "Durée moyenne des pauses collectives (silence à 0 locuteur)",
+        "calc_method": (
+            "Moyenne des durées des intervalles de silence collectif (0 locuteur actif) "
+            "sur l'ensemble de l'interaction — compute_audio_features.py"
+        ),
+        "reason": (
+            "révision post-audit VR N=12 : fiche ajoutée car mean_pause_s figure dans "
+            "PRUNING_PROTECTED_PAIRS (paire protégée avec audio_backchannel_rate_per_min, "
+            "r=0.928 à N=11 jugé artefactuel). Distincte de audio_floor_exchange_pause_mean_s "
+            "(pause moyenne d'inter-tour) et de audio_pause_ratio (ratio global de silence) : "
+            "capte la durée typique d'un temps mort collectif."
+        ),
+    },
 
     # =======================================================================
     # FACE / AFFECT
@@ -833,11 +1041,14 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": True,
         "report_preferred": True,
         "reference": "Ekman & Friesen (1978) — Facial Action Coding System",
-        "description": "Marqueur de tristesse (AU15+AU17 co-actifs)",
+        "description": "Engagement expressif bas du visage (AU15+AU17 co-actifs)",
         "calc_method": (
             "Source : au15_au17_coactive_pct_mean — proportion de frames où AU15 "
-            "(depressor anguli oris) et AU17 (chin raiser) sont co-actifs ; "
-            "marqueur FACS de tristesse (Ekman & Friesen 1978). "
+            "(depressor anguli oris) et AU17 (chin raiser) sont co-actifs. "
+            "Requalification (audit) : indicateur d'ENGAGEMENT EXPRESSIF de la partie "
+            "basse du visage, et NON un marqueur de tristesse à part entière — la "
+            "co-activation AU15+AU17 est une condition nécessaire mais non suffisante "
+            "de la tristesse FACS (Ekman & Friesen 1978), sans les AU oculaires. "
             "Complément : au4_au15_coactive_pct_mean (BrowLowerer + LipCornerDepressor). "
             "Source tracée dans face_negative_affect_ratio_source "
             "— compute_high_level_features.py"
@@ -1568,12 +1779,18 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "priority": 50,
         "core": False,
         "core_hl": False,
-        "redundant_with": ["shared_obj_n_episodes"],
+        # révision post-audit VR N=12 — count absolu confondu avec la durée ;
+        # représentant canonique = gaze_convergence_episode_rate_per_min_ref (rate normalisé).
+        "redundant_with": ["gaze_convergence_episode_rate_per_min_ref", "shared_obj_n_episodes"],
         "drop_if_redundant": True,
         "regression_preferred": False,
         "report_preferred": False,
         "description": "Nombre d'épisodes de convergence directionnelle",
         "calc_method": "Comptage des épisodes où gaze_convergence_ratio > 0 — analyze_gaze.py",
+        "reason": (
+            "révision post-audit VR N=12 : count absolu confondu avec la durée d'interaction ; "
+            "préférer gaze_convergence_episode_rate_per_min_ref (rate normalisé)."
+        ),
     },
     "gaze_convergence_dur_total_s": {
         "family": "gaze",
@@ -1665,16 +1882,29 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "regression_preferred": False,
         "report_preferred": False,
         "reference": "analyze_gaze.py",
-        "description": "log1p(durée totale convergence directionnelle) — pour régression",
+        "description": "log1p(durée TOTALE de convergence directionnelle, s) — exclue de la PCA (durée absolue)",
         "calc_method": (
             "log1p(gaze_convergence_dur_total_s) — compute_high_level_features.py. "
-            "Équivalent directionnel de log_gaze_shared_obj_episode_dur_mean_s."
+            "⚠ Le nom '..._episode_dur_mean_s' est TROMPEUR : la valeur calculée est la "
+            "durée TOTALE de convergence (gaze_convergence_dur_total_s), et NON une durée "
+            "moyenne par épisode. Le nom est un artefact hérité de l'ancienne pipeline objet "
+            "(log_gaze_shared_obj_episode_dur_mean_s) ; conservé pour ne pas casser les CSV "
+            "existants, mais description et transformation alignées ici sur le calcul réel. "
+            "Exclue de la PCA (durée absolue, cf. _EXCLUDED_EXACT_NAMES / convention rate/count)."
         ),
-        "reason": "Distribution brute potentiellement asymétrique ; log-transform conservé par symétrie avec l'ancienne pipeline",
+        "reason": (
+            "Distribution brute potentiellement asymétrique ; log-transform conservé par symétrie "
+            "avec l'ancienne pipeline. Nom hérité trompeur (durée totale, pas moyenne par épisode) — "
+            "voir calc_method."
+        ),
     },
     "gaze_convergence_episode_rate_per_min_ref": {
         "family": "gaze",
-        "priority": 53,
+        # révision post-audit VR N=12 — 53 → 32 : rate = représentant canonique de la
+        # paire (rate, count) face à gaze_convergence_n_episodes (juste après gaze_convergence_ratio=30).
+        # NB : priorité 32 partagée avec mutual_gaze_ratio (doublon assumé — familles gaze
+        # distinctes ; validate_config émet un [WARN] non bloquant).
+        "priority": 32,
         "core": False,
         "core_hl": False,
         "redundant_with": ["gaze_convergence_ratio"],
@@ -1683,7 +1913,11 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "report_preferred": False,
         "description": "Taux d'épisodes de convergence par minute (normalisé par durée de référence)",
         "calc_method": "gaze_convergence_n_episodes / (interaction_dur_s_ref / 60) — compute_high_level_features.py",
-        "reason": "Redondant avec gaze_convergence_ratio à durée fixée ; préférer gaze_convergence_ratio",
+        "reason": (
+            "Redondant avec gaze_convergence_ratio à durée fixée ; préférer gaze_convergence_ratio. "
+            "révision post-audit VR N=12 : promu représentant canonique face au count brut "
+            "gaze_convergence_n_episodes (rate normalisé préféré au count absolu)."
+        ),
     },
     "gaze_convergence_episode_density_raw": {
         "family": "gaze",
@@ -1827,7 +2061,7 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "priority": 35,
         "core": True,
         "core_hl": True,
-        "redundant_with": [],
+        "redundant_with": ["gaze_convergence_ratio", "gaze_entropy_dir_mean"],
         "drop_if_redundant": False,
         "regression_preferred": True,
         "report_preferred": True,
@@ -1838,6 +2072,16 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "à poids égaux (1/2 chacun) avec fallback legacy sur z_shared_obj_ratio / z_gaze_entropy_mean_participants "
             "— compute_high_level_features.py. "
             "Remplace MOD-10 (shared_obj_ratio → gaze_convergence_ratio, analyse directionnelle sans maillage BIM)."
+        ),
+        # révision post-audit VR N=12 — Exclu de la PCA/analyses prédictives via
+        # _EXCLUDED_EXACT_NAMES : composite algébrique de gaze_convergence_ratio et
+        # gaze_entropy_dir_mean, tous deux retenus séparément — évite le triple
+        # comptage dans l'espace PCA. Reste utilisable en descriptif et SEM via
+        # CORE_HL_REPORT (fiche conservée intentionnellement, redundant_with mis à jour).
+        "reason": (
+            "Composite algébrique de gaze_convergence_ratio (poids +0.5) et "
+            "gaze_entropy_dir_mean (poids −0.5). Exclu de la PCA car ses deux "
+            "constituants survivent au pruning ; conservé pour la SEM et le rapport descriptif."
         ),
     },
     "gaze_mutual_gaze_ratio": {
@@ -1994,14 +2238,24 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
         "priority": 46,
         "core": False,
         "core_hl": False,
-        "redundant_with": [],
-        "drop_if_redundant": False,
+        "redundant_with": ["mutual_gaze_ratio"],  # révision post-audit VR N=12
+        "drop_if_redundant": True,  # révision post-audit VR N=12 — facette secondaire du cluster regard mutuel
         "description": "Durée moyenne des épisodes de regard mutuel au niveau dyadique",
         "calc_method": (
             "Moyenne inter-paires des durées moyennes des épisodes de regard mutuel "
             "(mutual_gaze_dur_total_s / mutual_gaze_n_episodes, agrégé par paire)"
         ),
+        "reason": (
+            "révision post-audit VR N=12 : facette secondaire d'un cluster regard mutuel "
+            "quasi absent en VR (ratio moyen ≈ 0.008). Exclue de la PCA via "
+            "_EXCLUDED_EXACT_NAMES ; représentant unique conservé = mutual_gaze_ratio."
+        ),
     },
+    # révision post-audit VR N=12 — pair_convergence_ratio_mean : agrégat dyadique
+    # de gaze_convergence_ratio, déjà documenté drop_if_redundant=True (fiche correcte).
+    # L'activation effective de la suppression dépend du seuil de pruning (0.85) et de
+    # la présence de gaze_convergence_ratio (canonique niveau groupe) dans l'espace
+    # analytique. Voir audit VR N=12.
     "pair_convergence_ratio_mean": {
         "family": "gaze",
         "priority": 44,
@@ -2032,17 +2286,32 @@ INV_FEATURES: dict[str, dict[str, Any]] = {
             "de participants de la triade"
         ),
     },
+    # révision post-audit VR N=12 — Cluster regard mutuel :
+    # mutual_gaze_dur_total_ratio_ref, mutual_gaze_episode_rate_per_min_ref et
+    # pair_mutual_gaze_dur_mean_s_mean mesurent des facettes redondantes du même
+    # regard mutuel. Représentant unique recommandé : mutual_gaze_ratio (directionnel
+    # VR-natif). L'arbitrage définitif du représentant unique demande une inspection
+    # empirique complémentaire (cf. « Points non résolus » de l'HISTORIQUE) ; les fiches
+    # restent donc inchangées ici (drop_if_redundant non forcé). L'activation d'une
+    # éventuelle suppression dépendra du seuil de pruning (0.85) et de la présence de
+    # mutual_gaze_ratio dans l'espace analytique. Voir audit VR N=12.
     "mutual_gaze_episode_rate_per_min_ref": {
         "family": "gaze",
         "priority": 48,
         "core": False,
         "core_hl": False,
-        "redundant_with": ["mutual_gaze_n_episodes_per_s", "mutual_gaze_n_episodes_sum_pairs"],
-        "drop_if_redundant": False,
+        # révision post-audit VR N=12 — facette secondaire du cluster regard mutuel
+        "redundant_with": ["mutual_gaze_ratio", "mutual_gaze_n_episodes_per_s", "mutual_gaze_n_episodes_sum_pairs"],
+        "drop_if_redundant": True,  # révision post-audit VR N=12
         "description": "Taux d'épisodes de regard mutuel par minute de référence",
         "calc_method": (
             "Nombre total d'épisodes de regard mutuel rapporté à une durée de référence "
             "normalisée en minutes (mutual_gaze_n_episodes_sum_pairs / duration_ref_min)"
+        ),
+        "reason": (
+            "révision post-audit VR N=12 : facette secondaire d'un cluster regard mutuel "
+            "quasi absent en VR (ratio moyen ≈ 0.008). Exclue de la PCA via "
+            "_EXCLUDED_EXACT_NAMES ; représentant unique conservé = mutual_gaze_ratio."
         ),
     },
     "mutual_gaze_dur_total_ratio_ref": {
@@ -2403,6 +2672,12 @@ def is_excluded_inv_feature(col: str) -> bool:
         return True
     if low.startswith("tms_") and low.endswith("_idx"):
         return True
+    # révision post-audit VR N=12 — Cluster regard mutuel : représentant unique.
+    # Exclure toute facette mutual_gaze_* / pair_mutual_gaze_* SAUF mutual_gaze_ratio.
+    if low != MUTUAL_GAZE_KEEP_ONLY and any(
+        low.startswith(p) for p in MUTUAL_GAZE_EXCLUDE_PREFIXES
+    ):
+        return True
     return False
 
 
@@ -2647,6 +2922,48 @@ REGRESSION_RETAINED_INV_FEATURES: dict[str, list[str]] = {
 }
 
 
+# ============================================================================
+# ESPACE DE FEATURES GELÉ (source unique pour TOUTES les strates VR)
+# ----------------------------------------------------------------------------
+# Point 1 (audit) : stepwise, Spearman-FDR, composites SEM, MLM et PCA doivent
+# tourner sur le MÊME espace de features. Cet espace est dérivé du pruning PCA
+# VR-only (inv_pruned_features.csv, kept=1) au chargement, puis filtré par les
+# règles d'exclusion INV. Toute strate qui construit son propre espace introduit
+# une divergence à proscrire : elle doit passer par get_frozen_inv_feature_space().
+# ============================================================================
+
+# Sous-dossier canonique du pruning VR-only (mode with_pruning).
+FROZEN_INV_SUBDIR = "results_inv_structure_vr_only/with_pruning"
+
+
+def get_frozen_inv_feature_space(
+    results_dir: "Any",
+    inv_subdir: str = FROZEN_INV_SUBDIR,
+) -> list[str]:
+    """Espace de features gelé = features kept=1 du pruning PCA VR-only.
+
+    Dérivé du CSV au chargement (cohérent avec le dernier pruning), puis filtré
+    par filter_inv_feature_names(). Retourne [] si le CSV est absent (l'appelant
+    doit alors décider d'un fallback explicite plutôt que de fabriquer un espace ad hoc).
+
+    C'est l'UNIQUE source de vérité de l'espace analytique VR : toutes les strates
+    (stepwise, Spearman-FDR, composites, MLM, PCA régression) doivent l'utiliser.
+    """
+    from pathlib import Path as _Path
+
+    csv_path = _Path(results_dir) / inv_subdir / "inv_pruned_features.csv"
+    if not csv_path.exists():
+        return []
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception:
+        return []
+    if df is None or df.empty or "kept" not in df.columns or "feature" not in df.columns:
+        return []
+    kept = df.loc[df["kept"] == 1, "feature"].astype(str).tolist()
+    return filter_inv_feature_names(list(dict.fromkeys(kept)))
+
+
 def is_redundant(feat_a: str, feat_b: str) -> bool:
     """
     Vérifie si deux features sont documentées comme redondantes.
@@ -2731,6 +3048,53 @@ def infer_family_from_name(feature: str) -> str | None:
 # ============================================================================
 # VALIDATION INTERNE
 # ============================================================================
+
+def assert_pruning_threshold(override: float | None) -> None:
+    """
+    Vérifie qu'un seuil de pruning passé par un pipeline en aval correspond au
+    seuil canonique `REDUNDANCY_CORR_THRESHOLD` (0.85).
+
+    À appeler depuis le pipeline appelant (analyze_inv_structure.py, rapport v2…)
+    quand un seuil est passé en argument. Émet un warning non bloquant si l'override
+    diffère du seuil canonique — un tel écart est un défaut de synchronisation à
+    corriger dans l'appelant, pas dans la config.
+    """
+    if override is None:
+        return
+    if abs(float(override) - REDUNDANCY_CORR_THRESHOLD) > 1e-9:
+        print(
+            f"[WARN] Seuil de pruning override={override} != seuil canonique "
+            f"REDUNDANCY_CORR_THRESHOLD={REDUNDANCY_CORR_THRESHOLD}. "
+            f"Defaut de synchronisation a corriger dans le pipeline appelant."
+        )
+
+
+def _parse_nanmean_constituents(calc_method: str) -> list[str]:
+    """
+    Extrait les constituants d'un composite décrit comme
+    nanmean([z_A, ±k × z_B, ...]) dans son champ calc_method.
+
+    Retourne les noms de features sous-jacentes (sans préfixe z_ ni coefficient).
+    Retourne [] si le calc_method ne correspond pas au motif nanmean([...]).
+    """
+    import re
+
+    text = str(calc_method or "")
+    if "nanmean(" not in text.replace(" ", "").lower():
+        return []
+    # Isoler le contenu du premier nanmean([...])
+    m = re.search(r"nanmean\(\s*\[(.*?)\]", text, flags=re.DOTALL)
+    if not m:
+        return []
+    inner = m.group(1)
+    constituents: list[str] = []
+    # Chaque token de la forme (optionnel ± coeff ×) z_<nom>
+    for tok in re.findall(r"z_([A-Za-z0-9_]+)", inner):
+        name = tok.strip()
+        if name and name not in constituents:
+            constituents.append(name)
+    return constituents
+
 
 def validate_config(raise_on_duplicate_priority: bool = False) -> None:
     """
@@ -2853,6 +3217,97 @@ def validate_config(raise_on_duplicate_priority: bool = False) -> None:
             f"[INFO] Familles autorisées non utilisées dans INV_FEATURES : "
             f"{sorted(unused_families)}"
         )
+
+    # ------------------------------------------------------------------
+    # révision post-audit VR N=12 — Contrôle 1 :
+    # Composites nanmean([z_A, z_B, ...]) dont TOUS les constituants figurent
+    # dans le core PCA (CORE_HL ou le CORE_* de la même famille) → warning
+    # « composite algébriquement redondant ». Un tel composite fait voir à la
+    # PCA plusieurs fois la même information linéaire ; il devrait être exclu de
+    # l'espace PCA (via _EXCLUDED_EXACT_NAMES) tout en restant utilisable en SEM.
+    #
+    # Généralisation possible (non implémentée ici) : appliquer le même contrôle
+    # à toute forme de composite linéaire (somme pondérée z-scorée, pas seulement
+    # nanmean), en parsant les coefficients depuis calc_method.
+    _core_by_family = {
+        "audio": set(CORE_AUDIO) | set(CORE_SPEECH),
+        "face": set(CORE_FACE),
+        "gaze": set(CORE_GAZE),
+    }
+    _core_all = set(CORE_HL) | set(CORE_AUDIO) | set(CORE_SPEECH) | set(CORE_FACE) | set(CORE_GAZE)
+    for feat, cfg in INV_FEATURES.items():
+        constituents = _parse_nanmean_constituents(cfg.get("calc_method", ""))
+        if len(constituents) < 2:
+            continue
+        # Ne considérer que les constituants réellement documentés comme features.
+        known = [c for c in constituents if c in INV_FEATURES]
+        if len(known) < 2:
+            continue
+        family = cfg.get("family", "")
+        core_scope = _core_by_family.get(family, set()) | set(CORE_HL)
+        if all(c in core_scope or c in _core_all for c in known):
+            # Ne pas alerter si le composite est déjà exclu de la PCA.
+            if not is_excluded_inv_feature(feat):
+                print(
+                    f"[WARN] '{feat}' est un composite algébriquement redondant : "
+                    f"tous ses constituants {known} figurent dans le core PCA. "
+                    f"Envisager de l'exclure de la PCA (via _EXCLUDED_EXACT_NAMES)."
+                )
+
+    # ------------------------------------------------------------------
+    # révision post-audit VR N=12 — Contrôle 2 :
+    # Paires (name_rate_per_min, name_absolute) où le count a une priorité
+    # INFÉRIEURE (donc « préférée ») au rate → warning suggérant l'inversion.
+    # Convention : le rate normalisé est le représentant canonique.
+    # Le suffixe rate est retiré pour obtenir un « stem » (radical) ; on n'apparie
+    # qu'un count partageant ce stem complet comme préfixe (évite les faux positifs
+    # legacy à radical court, ex. shared_obj_*).
+    _rate_suffixes = (
+        "_episode_rate_per_min_ref",
+        "_rate_per_min_ref",
+        "_rate_per_min",
+    )
+    for feat, cfg in INV_FEATURES.items():
+        matched_suffix = next((s for s in _rate_suffixes if feat.endswith(s)), None)
+        if matched_suffix is None:
+            continue
+        stem = feat[: -len(matched_suffix)]
+        if not stem:
+            continue
+        rate_prio = cfg.get("priority", 999)
+        for count_name, count_cfg in INV_FEATURES.items():
+            if count_name == feat:
+                continue
+            is_count = (
+                count_name.startswith("n_")
+                or "_n_episodes" in count_name
+                or count_name.endswith("_total")
+            )
+            if not is_count:
+                continue
+            # Rapprochement strict : le count doit partager le stem complet du rate
+            # (même radical de mesure), sinon on ignore.
+            if not count_name.startswith(stem):
+                continue
+            count_prio = count_cfg.get("priority", 999)
+            if count_prio < rate_prio:
+                print(
+                    f"[WARN] Paire rate/count '{feat}' (prio {rate_prio}) vs "
+                    f"'{count_name}' (prio {count_prio}) : le count absolu est prioritaire "
+                    f"sur le rate — envisager l'inversion (rate = représentant canonique)."
+                )
+
+    # ------------------------------------------------------------------
+    # révision post-audit VR N=12 — Contrôle 3 :
+    # Toute feature figurant dans PRUNING_PROTECTED_PAIRS doit exister dans
+    # INV_FEATURES (une paire protégée référençant une feature fantôme est une erreur).
+    for pair in PRUNING_PROTECTED_PAIRS:
+        for member in pair:
+            if member not in INV_FEATURES:
+                raise ValueError(
+                    f"PRUNING_PROTECTED_PAIRS référence une feature absente de "
+                    f"INV_FEATURES : '{member}'"
+                )
 
     # Vérification des listes core
     for feat in CORE_AUDIO + CORE_SPEECH + CORE_FACE + CORE_GAZE + CORE_HL:

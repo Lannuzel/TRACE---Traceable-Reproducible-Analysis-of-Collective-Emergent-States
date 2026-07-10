@@ -37,6 +37,7 @@ from config.inv_features_config import (
     infer_family_from_name,
     INV_FEATURES,
     PRUNING_PROTECTED_PAIRS,
+    REDUNDANCY_CORR_THRESHOLD,
     REGRESSION_FORCE_INCLUDE,
 )
 from py.pca_regression import render_pca_regression_section
@@ -145,8 +146,8 @@ def _render_inv_modality_pca_subsection(
                     pdf_elems.append(Spacer(1, 0.08 * inch))
 
                     if is_pairwise_schema:
-                        lines.append("**Détail des paires redondantes (|r| > 0.80) :**\n")
-                        detail_title = "Détail des paires redondantes (|r| > 0.80) :"
+                        lines.append(f"**Détail des paires redondantes (|r| > {REDUNDANCY_CORR_THRESHOLD:.2f}) :**\n")
+                        detail_title = f"Détail des paires redondantes (|r| > {REDUNDANCY_CORR_THRESHOLD:.2f}) :"
                     else:
                         lines.append("**Détail des features redondantes (|loading| > 0.60) :**\n")
                         detail_title = "Détail des features redondantes (|loading| > 0.60) :"
@@ -595,13 +596,13 @@ def render_inv_pca_section(
             pruning_status = (
                 f"**Mode d'analyse : WITH PRUNING** (`--inv-analysis-mode pruning`, scope {scope_label})\n\n"
                 f"La PCA présentée ici a été calculée sur **{n_kept} features uniques après pruning** "
-                f"des variables redondantes (seuil |r| > 0.80). {n_dropped} décisions de suppression "
+                f"des variables redondantes (seuil |r| > {REDUNDANCY_CORR_THRESHOLD:.2f}). {n_dropped} décisions de suppression "
                 "ont été documentées dans les tableaux ci-dessous."
             )
             pruning_status_pdf = (
                 f"<b>Mode d'analyse : WITH PRUNING</b> (<tt>--inv-analysis-mode pruning</tt>, scope {scope_label})<br/>"
                 f"La PCA présentée ici a été calculée sur <b>{n_kept} features uniques après pruning</b> "
-                f"des variables redondantes (seuil |r| &gt; 0.80). {n_dropped} décisions de suppression "
+                f"des variables redondantes (seuil |r| &gt; {REDUNDANCY_CORR_THRESHOLD:.2f}). {n_dropped} décisions de suppression "
                 "ont été documentées dans les tableaux ci-dessous."
             )
             pruning_table_title_md = "Features effectivement supprimées avant la PCA :"
@@ -620,13 +621,13 @@ def render_inv_pca_section(
                 f"**Mode d'analyse : WITHOUT PRUNING** (`--inv-analysis-mode no-pruning`, scope {scope_label})\n\n"
                 f"La PCA présentée ici a été calculée sur **{n_total} features valides sans pruning analytique**. "
                 "Les redondances sont conservées afin de décrire la structure complète de l'espace des variables.\n\n"
-                f"_Diagnostic : {n_dropped} features seraient redondantes (|r| > 0.80)._"
+                f"_Diagnostic : {n_dropped} features seraient redondantes (|r| > {REDUNDANCY_CORR_THRESHOLD:.2f})._"
             )
             pruning_status_pdf = (
                 f"<b>Mode d'analyse : WITHOUT PRUNING</b> (<tt>--inv-analysis-mode no-pruning</tt>, scope {scope_label})<br/>"
                 f"La PCA présentée ici a été calculée sur <b>{n_total} features valides sans pruning analytique</b>. "
                 "Les redondances sont conservées afin de décrire la structure complète de l'espace des variables.<br/>"
-                f"<i>Diagnostic : {n_dropped} features seraient redondantes (|r| &gt; 0.80).</i>"
+                f"<i>Diagnostic : {n_dropped} features seraient redondantes (|r| &gt; {REDUNDANCY_CORR_THRESHOLD:.2f}).</i>"
             )
             pruning_table_title_md = "Diagnostic de redondance non appliqué :"
             pruning_table_title_pdf = "<i>Diagnostic de redondance non appliqué :</i>"
@@ -845,7 +846,7 @@ def render_inv_pca_section(
                     if corr_pruned_png.exists():
                         pdf_elems.append(Image(str(corr_pruned_png), width=6.3 * inch, height=5.5 * inch))
                         pdf_elems.append(Paragraph(
-                            "<i>Corrélations de Pearson — variables retenues après pruning (|r| > 0.80)</i>",
+                            f"<i>Corrélations de Pearson — variables retenues après pruning (|r| > {REDUNDANCY_CORR_THRESHOLD:.2f})</i>",
                             styles["Normal"],
                         ))
                     else:
@@ -856,9 +857,16 @@ def render_inv_pca_section(
 
     note = (
         "La PCA réduit les features INV (audio, gaze, face) en composantes latentes "
-        "orthogonales maximisant la variance. Les composantes sont retenues selon le critère "
-        "de Kaiser (eigenvalue > 1) ou jusqu'à 70% de variance cumulée. "
-        "Le clustering hiérarchique regroupe les features fortement corrélées."
+        "orthogonales maximisant la variance. Le critère de rétention est l'ANALYSE "
+        "PARALLÈLE DE HORN (1965 ; percentile 95 sur 1000 tirages aléatoires de même "
+        "dimension) : seules les composantes dont l'eigenvalue dépasse le seuil aléatoire "
+        "sont retenues. À p > n (ici 17 features pour 12 groupes VR), le critère de Kaiser "
+        "(eigenvalue > 1) N'EST PAS valide — il surestime le nombre de composantes car la "
+        "variance totale est répartie sur min(n−1, p) axes — et n'est reporté qu'à titre "
+        "indicatif. Le clustering hiérarchique regroupe les features fortement corrélées. "
+        "Imputation (audit) : un groupe VR sans features audio complètes est imputé (médiane) "
+        "pour atteindre n=12 ; les composantes à dominante audio reposent donc sur 11 observations "
+        "audio réelles + 1 imputée, à interpréter avec la prudence correspondante."
     )
     pdf_elems.append(Paragraph(note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.1 * inch))
@@ -902,11 +910,54 @@ def render_inv_pca_section(
         except Exception as e:
             pdf_elems.append(Paragraph(f"(Variance expliquée non disponible : {e})", styles["Normal"]))
 
+    # Tableau de l'analyse parallèle de Horn (critère de rétention retenu)
+    horn_csv = inv_dir / "pca_horn_parallel_analysis.csv"
+    if horn_csv.exists():
+        try:
+            horn = pd.read_csv(horn_csv)
+            for col in ["eigenvalue_observed", "horn_threshold_p95"]:
+                if col in horn.columns:
+                    horn[col] = horn[col].round(3)
+            n_horn = int(horn["passes_horn"].sum()) if "passes_horn" in horn.columns else 0
+            horn_summary = (
+                f"Analyse parallèle de Horn : {n_horn} composante(s) retenue(s) "
+                "(eigenvalue observée > seuil aléatoire p95). Critère principal de rétention à p > n."
+            )
+            # C8 : détection des composantes borderline (marge relative < 5 % au seuil p95).
+            _borderline = []
+            if {"eigenvalue_observed", "horn_threshold_p95", "component", "passes_horn"}.issubset(horn.columns):
+                for _, _r in horn.iterrows():
+                    if not bool(_r["passes_horn"]):
+                        continue
+                    _thr = float(_r["horn_threshold_p95"])
+                    _obs = float(_r["eigenvalue_observed"])
+                    if _thr > 0 and (_obs - _thr) / _thr < 0.05:
+                        _borderline.append((str(_r["component"]), (_obs - _thr) / _thr * 100.0))
+            lines.append(f"**{horn_summary}**\n\n")
+            lines.append(md_table_fn(horn, max_rows=12))
+            pdf_elems.append(Paragraph(f"<b>{horn_summary}</b>", styles["Normal"]))
+            pdf_elems.append(Spacer(1, 0.05 * inch))
+            pdf_elems.append(pdf_table_fn(horn, max_rows=12))
+            if _borderline:
+                _bl_str = ", ".join(f"{c} (+{m:.2f} %)" for c, m in _borderline)
+                horn_caution = (
+                    f"⚠ Composante(s) BORDERLINE : {_bl_str} dépassent le seuil p95 de moins de 5 % — "
+                    "leur rétention est fragile (elles pourraient basculer sous un autre tirage aléatoire). "
+                    "L'interprétation substantielle doit être ancrée sur PC1–PC2 (marges confortables) ; "
+                    "PC3–PC4 sont à considérer comme exploratoires."
+                )
+                lines.append(f"\n_{horn_caution}_\n\n")
+                pdf_elems.append(Spacer(1, 0.03 * inch))
+                pdf_elems.append(Paragraph(horn_caution, styles["Normal"]))
+            pdf_elems.append(Spacer(1, 0.1 * inch))
+        except Exception as e:
+            pdf_elems.append(Paragraph(f"(Analyse de Horn non disponible : {e})", styles["Normal"]))
+
     scree_png = inv_dir / "pca_scree_plot.png"
     if scree_png.exists():
-        lines.append(f"![]({scree_png.name})\n_Scree plot — critère de Kaiser (ligne rouge)_\n\n")
+        lines.append(f"![]({scree_png.name})\n_Scree plot — la ligne rouge (Kaiser eigenvalue=1) est indicative ; la rétention suit Horn_\n\n")
         pdf_elems.append(Image(str(scree_png), width=4.5 * inch, height=3.0 * inch))
-        pdf_elems.append(Paragraph("<i>Scree plot — critère de Kaiser (eigenvalue > 1)</i>", styles["Normal"]))
+        pdf_elems.append(Paragraph("<i>Scree plot — ligne rouge Kaiser (indicative, invalide à p>n) ; rétention par analyse de Horn</i>", styles["Normal"]))
         pdf_elems.append(Spacer(1, 0.1 * inch))
 
     component_palette = [
@@ -919,9 +970,18 @@ def render_inv_pca_section(
         colors.HexColor("#f1f1f1"),
     ]
 
-    # Détermine les composantes Kaiser valides une seule fois
+    # Composantes retenues = celles qui passent l'analyse parallèle de Horn.
+    # (Fallback sur Kaiser eigenvalue≥1 seulement si le CSV Horn est absent — indicatif.)
     kaiser_comps: list[str] = []
-    if ev_csv.exists():
+    horn_csv_sel = inv_dir / "pca_horn_parallel_analysis.csv"
+    if horn_csv_sel.exists():
+        try:
+            _horn_sel = pd.read_csv(horn_csv_sel)
+            if "passes_horn" in _horn_sel.columns and "component" in _horn_sel.columns:
+                kaiser_comps = _horn_sel[_horn_sel["passes_horn"].astype(bool)]["component"].astype(str).tolist()
+        except Exception:
+            pass
+    if not kaiser_comps and ev_csv.exists():
         try:
             ev_tmp = pd.read_csv(ev_csv)
             kaiser_comps = ev_tmp[ev_tmp["eigenvalue"] >= 1.0]["component"].astype(str).tolist()

@@ -836,7 +836,14 @@ def forward_stepwise_inv_models(
     y_col: str,
     candidate_cols: list[str],
     max_features: int = 4,
+    p_enter: float = 0.05,
 ) -> list[dict[str, Any]]:
+    """Sélection forward stepwise OLS.
+
+    p_enter : seuil p pour qu'un prédicteur reste dans le modèle (chaque prédicteur
+    doit vérifier p < p_enter). Défaut 0.05 (M9, revue : harmonisé avec la
+    régression sur scores PCA, qui utilisait déjà 0.05).
+    """
     selected: list[str] = []
     remaining = [c for c in candidate_cols if c in df.columns]
     results: list[dict[str, Any]] = []
@@ -851,7 +858,7 @@ def forward_stepwise_inv_models(
             if model is None or sub.empty:
                 continue
             pvals = model.pvalues.drop(labels=["const"], errors="ignore")
-            if pvals.empty or (pvals >= 0.10).any():
+            if pvals.empty or (pvals >= p_enter).any():
                 continue
             params = model.params.drop(labels=["const"], errors="ignore")
             y_sd = float(pd.to_numeric(sub[y_col], errors="coerce").std(ddof=1))
@@ -992,7 +999,8 @@ def render_inv_stepwise_regression_section(
         "Pour chaque variable dépendante, les modèles sont estimés par sélection "
         "pas-à-pas avant (1 à 4 prédicteurs) sur les features INV pruned, séparés "
         "par modalité ou combinaison de modalités. Parmi les modèles calculés, seuls "
-        "sont retenus ceux pour lesquels chaque prédicteur vérifie p < 0.10 ; pour "
+        "sont retenus ceux pour lesquels chaque prédicteur vérifie p < 0.05 (seuil "
+        "harmonisé avec la régression sur scores PCA) ; pour "
         "chaque nombre de prédicteurs, le modèle affiché est celui qui présente le "
         "R² le plus élevé. Les diagnostics de résidus et la validation croisée "
         "répétée 10-run 5-fold sont rapportés pour ces modèles retenus."
@@ -1391,10 +1399,11 @@ def render_inv_stepwise_regression_section(
         lines.append(f"#### {section_num}.3 Meilleurs modèles stepwise significatifs par variable dépendante\n\n")
         lines.extend(table_lines)
         lines.append(
-            "_Seuls les modèles pour lesquels chaque prédicteur vérifie p < 0.10 sont retenus. "
+            "_Seuls les modèles pour lesquels chaque prédicteur vérifie p < 0.05 sont retenus "
+            "(seuil harmonisé avec la régression sur scores PCA). "
             "Pour chaque nombre de prédicteurs, le modèle affiché est celui qui présente le R² le plus élevé. "
             "Le dernier indicateur (RMSE) correspond au RMSE moyen de la validation croisée répétée 10-run 5-fold. "
-            "Les marqueurs indiquent le statut des prédicteurs individuels († tendance p < 0.10 ; * significatif p < 0.05 ; ** p < 0.01 ; *** p < 0.001). "
+            "Les marqueurs indiquent le statut des prédicteurs individuels (* significatif p < 0.05 ; ** p < 0.01 ; *** p < 0.001). "
             "La colonne `Signe / magnitude` rapporte le sens de l'effet et sa taille selon |βstd| "
             "(négligeable < 0.10 ; faible < 0.30 ; modérée < 0.50 ; forte ≥ 0.50). "
             "La colonne `Modalities` correspond aux familles réellement représentées par les prédicteurs retenus._"
@@ -1405,10 +1414,11 @@ def render_inv_stepwise_regression_section(
         pdf_elems.extend(pdf_tables)
         pdf_elems.append(
             Paragraph(
-                "Seuls les modèles pour lesquels chaque prédicteur vérifie p < 0.10 sont retenus. "
+                "Seuls les modèles pour lesquels chaque prédicteur vérifie p < 0.05 sont retenus "
+                "(seuil harmonisé avec la régression sur scores PCA). "
                 "Pour chaque nombre de prédicteurs, le modèle affiché est celui qui présente le R² le plus élevé. "
                 "Le dernier indicateur (RMSE) correspond au RMSE moyen de la validation croisée répétée 10-run 5-fold. "
-                "Les marqueurs indiquent le statut des prédicteurs individuels (dague = tendance p < 0.10 ; * = significatif p < 0.05 ; ** p < 0.01 ; *** p < 0.001). "
+                "Les marqueurs indiquent le statut des prédicteurs individuels (* = significatif p < 0.05 ; ** p < 0.01 ; *** p < 0.001). "
                 "La colonne Signe / magnitude rapporte le sens de l'effet et sa taille selon |βstd| "
                 "(négligeable < 0.10 ; faible < 0.30 ; modérée < 0.50 ; forte ≥ 0.50). "
                 "La colonne Modalities correspond aux familles reellement representees par les predicteurs retenus.",

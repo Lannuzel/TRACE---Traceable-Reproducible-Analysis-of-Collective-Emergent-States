@@ -36,6 +36,20 @@ def safe_filename(s: str, max_len: int = 120) -> str:
     return s.strip("._-")
 
 
+# Point 4 — un |ρ| quasi parfait à très petit n est presque toujours un artefact
+# de saturation de rangs (Spearman sur ≤ ~9 points), non une vraie association.
+ARTEFACT_ABS_RHO_MIN = 0.95
+ARTEFACT_N_MAX = 10
+
+
+def flag_artefact_suspect(rho: float | None, n: int | None) -> bool:
+    """True si la corrélation est un artefact suspect : |ρ| > 0.95 et n < 10."""
+    try:
+        return abs(float(rho)) > ARTEFACT_ABS_RHO_MIN and int(n) < ARTEFACT_N_MAX
+    except (TypeError, ValueError):
+        return False
+
+
 def top_corr_df(
     all_corr_results: list[dict],
     top_n: int = 20,
@@ -43,6 +57,14 @@ def top_corr_df(
     max_abs_rho: float | None = None,
     max_p: float | None = None,
 ) -> pd.DataFrame:
+    """Agrège les corrélations (top classement 3.1.9 / section 4).
+
+    GARANTIE FDR (audit) : cette fonction est un CHEMIN D'AGRÉGATION PUR. Elle ne
+    recalcule JAMAIS de correction FDR (aucun appel à bh_fdr / multipletests). La
+    colonne `p_fdr` est HÉRITÉE telle quelle des DataFrames de blocs qui l'ont
+    calculée par famille (VD × bloc sensoriel). Toute réintroduction d'un bh_fdr
+    ici casserait l'égalité p_fdr[3.1.9] == p_fdr[3.x.5] (cf. test_fdr_coherence_319).
+    """
     if not all_corr_results:
         return pd.DataFrame()
 
@@ -52,12 +74,20 @@ def top_corr_df(
     if max_abs_rho is not None:
         df = df[df["abs_rho"] < max_abs_rho]
 
+    # p_fdr hérité (jamais recalculé) ; fallback sur p brut si aucun p_fdr fourni.
     pcol = "p_fdr" if "p_fdr" in df.columns and df["p_fdr"].notna().any() else "p"
     if max_p is not None:
         df = df[df[pcol] <= max_p]
-    df = df.sort_values([pcol, "abs_rho"], ascending=[True, False])
 
-    keep = [c for c in ["block", "x", "y", "rho", "p", "p_fdr", "n"] if c in df.columns]
+    # Point 4 : flag automatique d'artefact (|ρ|>0.95 & n<10). Ces lignes sont
+    # reléguées en bas du classement pour ne pas trôner en tête (ex.
+    # floor_exchange_pause→skill_congruence, n=7, ρ≈−0.99, saturation de rangs).
+    df["artefact_suspect"] = [
+        flag_artefact_suspect(r, nn) for r, nn in zip(df["rho"], df.get("n", pd.Series([np.nan] * len(df))))
+    ]
+    df = df.sort_values(["artefact_suspect", pcol, "abs_rho"], ascending=[True, True, False])
+
+    keep = [c for c in ["block", "x", "y", "rho", "p", "p_fdr", "n", "artefact_suspect"] if c in df.columns]
     return df[keep].head(top_n).reset_index(drop=True)
 
 
@@ -114,6 +144,30 @@ def bh_fdr(pvals: np.ndarray) -> np.ndarray:
     return out
 
 
+def _spearman_ci_bootstrap(x: pd.Series, y: pd.Series, n_boot: int = 2000, seed: int = 12345) -> tuple[float, float]:
+    """IC95 bootstrap percentile pour un ρ de Spearman (implémentation locale légère)."""
+    xv = pd.to_numeric(x, errors="coerce").to_numpy(dtype=float)
+    yv = pd.to_numeric(y, errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(xv) & np.isfinite(yv)
+    xv, yv = xv[mask], yv[mask]
+    n = len(xv)
+    if n < 4:
+        return (np.nan, np.nan)
+    rng = np.random.default_rng(seed)
+    boots = np.full(n_boot, np.nan, dtype=float)
+    for b in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        xs, ys = xv[idx], yv[idx]
+        if np.std(xs) == 0 or np.std(ys) == 0:
+            continue
+        rr, _ = spearmanr(xs, ys)
+        boots[b] = rr
+    if not np.isfinite(boots).any():
+        return (np.nan, np.nan)
+    lo, hi = np.nanpercentile(boots, [2.5, 97.5])
+    return (float(lo), float(hi))
+
+
 def add_sig_stars(df: pd.DataFrame, p_col: str = "p", n_col: str = "n", n_min_sig: int = N_MIN_SIG) -> pd.DataFrame:
     out = df.copy()
 
@@ -142,7 +196,14 @@ def spearman_table(
     apply_fdr: bool = False,
     block: str | None = None,
     n_min_sig: int = N_MIN_SIG,
+    fdr_family: str = "by_y",
 ) -> tuple[pd.DataFrame, list[dict]]:
+    """Corrélations Spearman avec FDR par famille et flag artefact.
+
+    fdr_family : "by_y" (défaut) = une famille Benjamini-Hochberg par variable
+        dépendante (VD × bloc de modalité sensorielle audio/face/gaze, condition VR, schéma déclaré dans les notes) ; "table" = une
+        seule famille sur toute la table (ancien comportement).
+    """
     rows = []
     rows_all = []
 
@@ -164,7 +225,18 @@ def spearman_table(
             if not (np.isfinite(r) and np.isfinite(p)):
                 continue
 
-            rec = {"x": x, "y": y, "rho": float(r), "p": float(p), "n": n}
+            # M5 : IC95 bootstrap percentile dans les blocs inférentiels (apply_fdr).
+            if apply_fdr:
+                ci_lo, ci_hi = _spearman_ci_bootstrap(sub[x], sub[y])
+                ci95 = f"[{ci_lo:.2f}; {ci_hi:.2f}]" if np.isfinite(ci_lo) and np.isfinite(ci_hi) else ""
+            else:
+                ci95 = ""
+
+            rec = {
+                "x": x, "y": y, "rho": float(r), "p": float(p), "n": n,
+                "IC95": ci95,
+                "artefact_suspect": flag_artefact_suspect(float(r), n),
+            }
             rows.append(rec)
 
             rec_all = dict(rec)
@@ -173,7 +245,7 @@ def spearman_table(
             rows_all.append(rec_all)
 
     if not rows:
-        cols = ["x", "y", "rho", "p", "n", "sig"]
+        cols = ["x", "y", "rho", "p", "n", "sig", "artefact_suspect"]
         if apply_fdr:
             cols.insert(4, "p_fdr")
         empty = pd.DataFrame(columns=cols)
@@ -182,25 +254,43 @@ def spearman_table(
     out = pd.DataFrame(rows)
 
     if apply_fdr:
-        out["p_fdr"] = bh_fdr(out["p"].values)
+        # FDR par famille = VD × bloc de modalité sensorielle (audio/face/gaze), condition VR.
+        out["p_fdr"] = np.nan
+        if fdr_family == "by_y":
+            for _yv, grp in out.groupby("y"):
+                out.loc[grp.index, "p_fdr"] = bh_fdr(grp["p"].values)
+        else:
+            out["p_fdr"] = bh_fdr(out["p"].values)
 
     p_sort = "p_fdr" if apply_fdr else "p"
-    out = out.sort_values([p_sort, "p", "rho"], ascending=[True, True, False]).reset_index(drop=True)
+    # M3 : les artefacts suspects (|ρ|>0.95 & n<10) sont relégués en bas du tri.
+    out = out.sort_values(["artefact_suspect", p_sort, "p", "rho"],
+                          ascending=[True, True, True, False]).reset_index(drop=True)
     out = add_sig_stars(out, p_col=p_sort if apply_fdr else "p", n_min_sig=n_min_sig)
+    # Un artefact suspect ne doit jamais porter d'étoile de significativité.
+    out.loc[out["artefact_suspect"] == True, "sig"] = "⚠art"
 
     out["rho"] = out["rho"].round(2)
     out["p"] = out["p"].round(4)
     if apply_fdr:
         out["p_fdr"] = out["p_fdr"].round(4)
 
-    if apply_fdr and rows_all:
-        key_to_pfdr = {(r["x"], r["y"]): float(r["p_fdr"]) for _, r in out.iterrows()}
+    if rows_all:
+        key_to_art = {(r["x"], r["y"]): bool(r["artefact_suspect"]) for _, r in out.iterrows()}
         key_to_p = {(r["x"], r["y"]): float(r["p"]) for _, r in out.iterrows()}
         key_to_rho = {(r["x"], r["y"]): float(r["rho"]) for _, r in out.iterrows()}
+        key_to_pfdr = {(r["x"], r["y"]): float(r["p_fdr"]) for _, r in out.iterrows()} if apply_fdr else {}
         for rec in rows_all:
-            rec["p_fdr"] = key_to_pfdr.get((rec["x"], rec["y"]), np.nan)
-            rec["p"] = key_to_p.get((rec["x"], rec["y"]), round(rec["p"], 4))
-            rec["rho"] = key_to_rho.get((rec["x"], rec["y"]), round(rec["rho"], 2))
+            k = (rec["x"], rec["y"])
+            rec["artefact_suspect"] = key_to_art.get(k, rec.get("artefact_suspect", False))
+            rec["p"] = key_to_p.get(k, round(rec["p"], 4))
+            rec["rho"] = key_to_rho.get(k, round(rec["rho"], 2))
+            if apply_fdr:
+                rec["p_fdr"] = key_to_pfdr.get(k, np.nan)
+
+    # Ordre d'affichage stable : identifiants, effet, p, p_fdr, n, IC95, sig.
+    _order = ["x", "y", "rho", "p", "p_fdr", "n", "IC95", "sig", "artefact_suspect"]
+    out = out[[c for c in _order if c in out.columns] + [c for c in out.columns if c not in _order]]
 
     return out, rows_all
 
@@ -210,6 +300,8 @@ def md_table_highlight(df: pd.DataFrame, max_rows: int = MAX_ROWS_MD) -> str:
         return "_(vide)_\n\n"
 
     d = df.head(max_rows).copy()
+    # Colonne interne de tri/flag : ne pas l'afficher (le flag est porté par sig=⚠art).
+    d = d.drop(columns=["artefact_suspect"], errors="ignore")
     if "rho" in d.columns:
         d["rho"] = d["rho"].apply(fmt2)
 
@@ -259,6 +351,7 @@ def pdf_table_from_df(df: pd.DataFrame, max_rows: int = MAX_ROWS_PDF) -> Table:
         return Table([["(vide)"]])
 
     d = df.head(max_rows).copy()
+    d = d.drop(columns=["artefact_suspect"], errors="ignore")
     p_col = "p_fdr" if "p_fdr" in d.columns else "p"
 
     if "rho" in d.columns:
@@ -515,9 +608,19 @@ def render_corr_block(
     max_rows_md: int = MAX_ROWS_MD,
     max_rows_pdf: int = MAX_ROWS_PDF,
     n_min_sig: int = N_MIN_SIG,
+    descriptive_banner: bool = False,
 ) -> pd.DataFrame:
     lines.append(f"#### {title_md}\n")
     pdf_elems.append(Paragraph(title_pdf, styles["Heading4"]))
+
+    # M4 : bandeau descriptif standardisé pour les blocs à très petit n (Riedl/TCI).
+    if descriptive_banner:
+        _banner = (
+            "⚠ BLOC DESCRIPTIF (n≈7-8) — aucune inférence : pas de FDR interprétable, "
+            "les étoiles de significativité ne doivent pas être lues comme des tests confirmatoires."
+        )
+        lines.append(f"_{_banner}_\n\n")
+        pdf_elems.append(Paragraph(_banner, styles["Normal"]))
 
     if df is None or df.empty:
         lines.append("_(vide)_\n\n")
@@ -538,9 +641,15 @@ def render_corr_block(
     lines.append(f"_(n unités disponibles pour ce bloc: {nu})_\n\n")
     pdf_elems.append(Paragraph(f"(n unités disponibles pour ce bloc: {nu})", styles["Normal"]))
 
-    tab, rows_all = spearman_table(df, x_cols, y_cols, apply_fdr=apply_fdr, n_min_sig=n_min_sig)
+    # M4/R1 (revue) : sous bandeau descriptif, aucune correction FDR ni étoile
+    # de significativité ne doit être calculée — elles contrediraient le bandeau.
+    # n_min_sig=10**9 désactive toute étoile (add_sig_stars exige n < n_min_sig).
+    effective_apply_fdr = apply_fdr and not descriptive_banner
+    effective_n_min_sig = n_min_sig if not descriptive_banner else 10**9
+    tab, rows_all = spearman_table(df, x_cols, y_cols, apply_fdr=effective_apply_fdr, n_min_sig=effective_n_min_sig)
     for rec in rows_all:
         rec["block"] = title_pdf
+        rec["descriptive_only"] = descriptive_banner
 
     if all_corr_results is not None:
         all_corr_results.extend(rows_all)

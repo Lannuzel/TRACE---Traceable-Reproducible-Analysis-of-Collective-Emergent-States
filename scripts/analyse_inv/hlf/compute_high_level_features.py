@@ -1104,6 +1104,9 @@ def make_compact_output(df: pd.DataFrame) -> pd.DataFrame:
         "gaze_focus_proxy",
         "pair_convergence_ratio_mean",
         "pair_mutual_gaze_ratio_mean",
+        "pair_mutual_gaze_dur_mean_s_mean",
+        "mutual_gaze_episode_rate_per_min_ref",
+        "mutual_gaze_dur_total_ratio_ref",
         "gaze_joint_attention_idx_raw",
         "gaze_convergence_episode_rate_per_min_ref",
         "gaze_convergence_episode_density_raw",
@@ -1131,10 +1134,15 @@ def make_compact_output(df: pd.DataFrame) -> pd.DataFrame:
         "face_negative_affect_ratio",
         "face_negative_affect_extended_ratio",
         "face_facial_synchrony",
-        # AU individuels (audit/PCA uniquement — exclues des analyses prédictives)
+        "affect_balance_rate",
+        # AU individuels (présents dans la PCA — inclus pour que la régression y ait accès)
         "au1_active_pct_mean",
         "au4_active_pct_mean",
         "au4_au15_coactive_pct_mean",
+        "au6_active_pct_mean",
+        "au12_active_pct_mean",
+        "au15_active_pct_mean",
+        "au17_active_pct_mean",
         # --- Composites TMS/affect ---
         "tms_credibility_idx",
         "tms_coordination_idx",

@@ -37,6 +37,7 @@ from config import (
     TMS_DIMENSIONS,
     COHESION_COMPONENTS,
 )
+from config.inv_features_config import infer_family_from_name
 from py.regression import (
     forward_stepwise_inv_models,
     compute_model_diagnostics,
@@ -180,6 +181,67 @@ VD_LABELS: dict[str, str] = {
     "TSK": "Cohésion tâche",
     "COM": "Cohésion communication",
 }
+
+_FAMILY_LABEL_FR = {
+    "audio": "conversationnel/audio",
+    "face": "expressivité faciale",
+    "affect": "affect",
+    "gaze": "attention visuelle",
+}
+
+
+def _build_pc_interpretations(ld_csv: Path, pc_cols: list[str], top_k: int = 3) -> dict[str, str]:
+    """Dérive un libellé d'interprétation court pour chaque PC à partir des top loadings.
+
+    Point 5 : remplit la colonne « Interprétation » des tables 5.5.1. Le libellé
+    combine la famille dominante des features à fort loading et la polarité (+/−)
+    des 2 features les plus chargées, ex. « Face+ : synchronie & sourire ».
+    """
+    out: dict[str, str] = {}
+    try:
+        ld = pd.read_csv(ld_csv)
+    except Exception:
+        return {pc: "" for pc in pc_cols}
+    if ld.empty:
+        return {pc: "" for pc in pc_cols}
+    feat_col = ld.columns[0]
+    for pc in pc_cols:
+        if pc not in ld.columns:
+            out[pc] = ""
+            continue
+        sub = ld[[feat_col, pc]].copy()
+        sub["abs"] = sub[pc].abs()
+        sub = sub.nlargest(top_k, "abs")
+        if sub.empty:
+            out[pc] = ""
+            continue
+        # C8 : familles parmi les top loadings — détecter les axes MIXTES (aucune
+        # famille nettement dominante) au lieu de forcer une étiquette monolithique.
+        _short_fam = {"audio": "audio", "face": "face", "affect": "face", "gaze": "gaze"}
+        _fam_of = lambda f: _short_fam.get(str(infer_family_from_name(str(f))), str(infer_family_from_name(str(f))))
+        # Les deux loadings les plus forts (sub est déjà trié par |loading| décroissant).
+        _f1_name = sub.iloc[0][feat_col]
+        _f1_fam = _fam_of(_f1_name)
+        _f1_abs = abs(float(sub.iloc[0][pc]))
+        _f2_fam = None
+        _f2_abs = 0.0
+        if len(sub) >= 2:
+            _f2_fam = _fam_of(sub.iloc[1][feat_col])
+            _f2_abs = abs(float(sub.iloc[1][pc]))
+        # Axe mixte : les 2 loadings dominants sont de familles différentes et de
+        # magnitude comparable (le 2e vaut ≥ 85 % du 1er) → aucune famille ne domine.
+        if _f2_fam and _f2_fam != _f1_fam and _f1_abs > 0 and (_f2_abs / _f1_abs) >= 0.85:
+            fam_label = f"mixte {_f1_fam}-{_f2_fam}"
+        else:
+            fam_label = _FAMILY_LABEL_FR.get(_f1_fam, _f1_fam)
+        # polarité de la feature la plus chargée
+        top1 = sub.iloc[0]
+        sign = "+" if float(top1[pc]) >= 0 else "−"
+        feats_short = ", ".join(str(f).replace("audio_", "").replace("face_", "").replace("gaze_", "")
+                                for f in sub[feat_col].head(2))
+        out[pc] = f"{fam_label} {sign} ({feats_short})"
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Chargement données
@@ -379,7 +441,8 @@ def _render_stepwise_results(
     if not avail:
         return False, model_counter
 
-    models = forward_stepwise_inv_models(data, vd, avail, max_features=min(4, len(avail)))
+    # M9 : côté PCA le seuil d'entrée stepwise est p<0.05 (cohérent avec le préambule).
+    models = forward_stepwise_inv_models(data, vd, avail, max_features=min(4, len(avail)), p_enter=0.05)
     if not models:
         return False, model_counter
 
@@ -451,7 +514,7 @@ def _render_stepwise_results(
         repeatRows=1,
         colWidths=[0.45 * inch, 0.7 * inch, 0.6 * inch, 2.05 * inch, 2.2 * inch, 0.45 * inch, 0.65 * inch, 0.5 * inch],
     )
-    tbl.setStyle(TableStyle([
+    _style_cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 7),
@@ -461,8 +524,25 @@ def _render_stepwise_results(
         ("ALIGN", (5, 0), (-1, -1), "CENTER"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-    ]))
+    ]
+    # Point 8 : griser les modèles dont les hypothèses OLS échouent (Shapiro,
+    # Breusch-Pagan < 0.05, ou QQ < 0.90) — même filtre visuel que le rapport INV.
+    _grey_diag = colors.HexColor("#e0e0e0")
+    _n_grey = 0
+    for _i, (_, _brow) in enumerate(best_by_size.iterrows(), start=1):
+        if str(_brow.get("OLS_ok", "no")) != "yes":
+            _style_cmds.append(("BACKGROUND", (0, _i), (-1, _i), _grey_diag))
+            _style_cmds.append(("TEXTCOLOR", (0, _i), (-1, _i), colors.HexColor("#666666")))
+            _n_grey += 1
+    tbl.setStyle(TableStyle(_style_cmds))
     pdf_elems.append(tbl)
+    if _n_grey:
+        _grey_note = (
+            f"_{_n_grey} modèle(s) grisé(s) : hypothèses OLS non satisfaites "
+            "(Shapiro-Wilk p<0.05, Breusch-Pagan p<0.05 ou QQ r<0.90) — coefficients non interprétables._"
+        )
+        lines.append(_grey_note + "\n\n")
+        pdf_elems.append(Paragraph(_grey_note, styles["Normal"]))
 
     diag_parts = [
         f"M{int(row['Model'])}: n={int(row_n['n'])}, SW p={row_n['Shapiro_p']}, "
@@ -533,19 +613,32 @@ def _render_fixed_model(
         "p_glob": _format_pvalue(f_pval),
         "R²CV": f"{cv_mean:.3f}±{cv_sd:.3f}" if np.isfinite(cv_mean) else "–",
     }
+    ols_ok = diag.get("assumptions_ok", False)
     df_res = pd.DataFrame([row])
+    # C7 : marquer visuellement le modèle si les hypothèses OLS échouent (BP<0.05…).
+    if not ols_ok:
+        df_res.insert(0, "⚠", "OLS✗")
     lines.append(_df_to_md(df_res))
     lines.append("\n")
-    pdf_tbl = _df_to_pdf_table(df_res, styles, col_widths=[
+    _fixed_widths = ([0.5 * inch] if not ols_ok else []) + [
         0.7 * inch, 3.3 * inch, 0.4 * inch, 0.7 * inch, 0.6 * inch, 1.2 * inch
-    ])
+    ]
+    pdf_tbl = _df_to_pdf_table(df_res, styles, col_widths=_fixed_widths)
     if pdf_tbl:
+        # Griser toute la ligne de données quand OLS non satisfait.
+        if not ols_ok:
+            try:
+                pdf_tbl.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#e0e0e0")),
+                    ("TEXTCOLOR", (0, 1), (-1, 1), colors.HexColor("#666666")),
+                ]))
+            except Exception:
+                pass
         pdf_elems.append(pdf_tbl)
 
     sw_p = diag.get("shapiro_p", np.nan)
     bp_p = diag.get("breusch_pagan_p", np.nan)
     qq_r = diag.get("qq_corr", np.nan)
-    ols_ok = diag.get("assumptions_ok", False)
     diag_str = (
         f"_Diagnostics {name}_: n={n_obs}, "
         f"SW p={sw_p:.4f}, BP p={bp_p:.4f}, QQ r={qq_r:.3f}, "
@@ -627,6 +720,16 @@ def render_pca_regression_section(
     vd_available = [vd for vd in VD_REGRESSION if vd in data.columns]
     n_obs = len(data)
 
+    # --- Interprétation des composantes dérivée des top loadings (point 5) ---
+    # Calculée UNE fois pour alimenter les colonnes « Interprétation » des tables.
+    _rotation_pre = str(pca_rotation).lower().strip()
+    _ld_csv_pre = inv_dir / ("pca_loadings_varimax.csv" if _rotation_pre == "varimax" else "pca_loadings.csv")
+    if not _ld_csv_pre.exists():
+        _ld_csv_pre = inv_dir / "pca_loadings_raw.csv"
+        if not _ld_csv_pre.exists():
+            _ld_csv_pre = inv_dir / "pca_loadings.csv"
+    pc_interpretations = _build_pc_interpretations(_ld_csv_pre, pc_cols)
+
     # — Préambule —
     intro = (
         f"Les scores PC sont issus de la PCA sur {n_obs} groupes VR. "
@@ -634,7 +737,10 @@ def render_pca_regression_section(
         "Méthode : sélection forward stepwise (1 à 4 prédicteurs, p < 0.05 pour chaque prédicteur), "
         "OLS (statsmodels). Diagnostics : Shapiro-Wilk (résidus), Breusch-Pagan (hétéroscédasticité), "
         "corrélation QQ (normalité graphique). Validation croisée répétée 10-run 5-fold (R² CV ± SD). "
-        "Étoiles : * p<.05 ** p<.01 *** p<.001."
+        "Étoiles : * p<.05 ** p<.01 *** p<.001. "
+        "Note d'imputation (audit) : un groupe VR sans features audio complètes a été imputé "
+        "(médiane) pour atteindre n=12 dans la PCA et ces régressions ; les composantes à dominante "
+        "audio et les modèles qui les mobilisent reposent donc sur n=11 observations audio réelles + 1 imputée."
     )
     lines.append(f"{intro}\n\n")
     pdf_elems.append(Paragraph(intro, styles["Normal"]))
@@ -648,7 +754,7 @@ def render_pca_regression_section(
             continue
         pc_desc_rows.append({
             "Composante": pc,
-            "Interprétation": "",
+            "Interprétation": pc_interpretations.get(pc, ""),
             "Famille": next((fam for fam, pcs in PC_FAMILY.items() if pc in pcs), "–"),
             "N": int(len(vals)),
             "Moy": round(float(vals.mean()), 3),
@@ -663,7 +769,10 @@ def render_pca_regression_section(
         desc_note = (
             "Le tableau ci-dessous présente les statistiques descriptives des scores PCA "
             "sur le sous-ensemble VR analysé (n=" + str(n_obs) + " groupes). "
-            "Chaque score est standardisé (μ=0, σ=1 sur l'ensemble des groupes VR)."
+            "Les scores sont centrés (μ≈0) mais NON standardisés : leur variance égale "
+            "l'eigenvalue de la composante (sortie PCA sklearn sans whitening), de sorte "
+            "que l'ET décroît de PC1 à PC_k. Les coefficients OLS ci-dessous étant estimés "
+            "sur variables standardisées en interne, cette échelle n'affecte pas les β_std."
         )
         lines.append(f"{desc_title_md}\n\n")
         lines.append(f"{desc_note}\n\n")
@@ -719,7 +828,7 @@ def render_pca_regression_section(
     label_rows = [
         {
             "PC": pc,
-            "Interprétation": "",
+            "Interprétation": pc_interpretations.get(pc, ""),
             "Fam.": next((fam for fam, pcs in PC_FAMILY.items() if pc in pcs), "–"),
             top_label: top_loadings.get(pc, "–"),
         }

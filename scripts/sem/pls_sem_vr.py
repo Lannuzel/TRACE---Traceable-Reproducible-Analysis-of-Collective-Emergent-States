@@ -46,7 +46,7 @@ from scipy.stats import t as student_t
 # Empiriquement, face_negative_affect prédit SOC (β=+0.79 dans M11 trivarié),
 # CRE (rho=+0.62), Cohésion globale et COM en complément.
 # La branche affective autonome est conservée car ses chemins sont robustes.
-INCLUDE_AFFECT: bool = False
+INCLUDE_AFFECT: bool = True
 
 # ---------------------------------------------------------------------------
 # [2] VARIABLES DEPENDANTES ET MEDIATEURS
@@ -79,200 +79,48 @@ INPUT_COMPOSITE = "INPUT_composite"
 # ---------------------------------------------------------------------------
 # [4] Composites INV transactifs alignés sur les sous-systèmes (modalité-pure)
 # ---------------------------------------------------------------------------
-# Mapping principal : TAS=Gaze, TMS=Speech, TRS=Face (sans face_neg).
-# Validation PCA v2 :
-#   - PC2 (20.3% var) = face pure → INV_TRS validé
-#   - PC3 (14.1% var) = régulation conversationnelle → INV_TMS partiellement validé
-#   - PC1 (36.5% var) = gaze + audio_participation mixte → INV_TAS partiellement validé
-#
-# face_negative_affect_ratio EXCLU de INV_TRS car :
-#   1. Il charge négativement sur PC2 (composite face principal)
-#   2. Il a sa propre composante PC5 (variance distincte)
-#   3. Il prédit empiriquement la cohésion + CRE, pas la performance
-#   4. Le retirer de v2 INV_affect avait amélioré les R² (résultat empirique)
-# → Maintenu en branche affective autonome (voir [6]).
-
-# REFINED_INV_COMPOSITES: dict[str, list[str]] = {
-#     # TAS comportemental : attention partagée visuelle (gaze pur).
-#     # Validation : tous chargent sur PC1 (variance la plus élevée).
-#     "INV_TAS": [
-#         #"gaze_attention_coordination_idx",
-#         "gaze_shared_visual_attention_ratio",
-#         # "shared_obj_episode_rate_per_min_ref",
-#         #"log_gaze_shared_obj_episode_dur_mean_s",
-#         "gaze_entropy_mean_participants",  # inversé (voir INVERTED_*), 
-        
-#     ],
-#     # TMS comportemental : régulation des tours et coordination conversationnelle.
-#     # Validation : audio_successful_interruption_ratio + audio_overlap charge sur PC3.
-#     # audio_participation_entropy ajouté car prédicteur dominant des questionnaires
-#     # cohésion/CRE/TSK/COM dans la stepwise (β std = -0.74 à -0.81).
-#     # audio_overlap_speaking_ratio INVERSE car charge négativement sur PC3.
-#     "INV_TMS": [
-#         "audio_successful_interruption_ratio",
-#         "audio_floor_exchange_pause_mean_s",
-#         #"audio_avg_speaking_turn_duration_s",
-#         "audio_overlap_speaking_ratio",      # inversé (voir INVERTED_*)
-#         #"audio_backchannel_rate_per_min",
-#         "audio_participation_entropy", # inversé (voir INVERTED_*)
-#         #"audio_pause_ratio",
-#     ],
-#     # TRS comportemental : synchronie faciale et expressivité positive (face pur).
-#     # Validation : tous chargent fortement sur PC2 (loadings 0.46-0.50).
-#     # face_negative_affect_ratio EXCLU (charge négativement, voir branche affective).
-#     "INV_TRS": [
-#         "face_facial_synchrony",
-#         "face_smile_ratio",
-#         #"affect_balance_rate",
-#         "face_negative_affect_ratio"
-#     ],
-# }
-# # Indicateurs dont la contribution au composite est inversée (signe négatif).
-# INVERTED_COMPOSITE_INDICATORS: dict[str, set[str]] = {
-#     # Entropie regard élevée = dispersion visuelle = - attention partagée.
-#     #"INV_TAS": {"gaze_attention_coordination_idx", "gaze_entropy_mean_participants"},
-#     "INV_TAS": {"gaze_entropy_mean_participants", "shared_obj_episode_rate_per_min_ref"},
-#     # Chevauchements de parole = régulation chaotique = - régulation contrôlée.
-#     # Justification empirique : PC3 charge audio_overlap à -0.466 (signe inverse
-#     # de audio_successful_interruption_ratio +0.555).
-#     "INV_TMS": {"audio_participation_entropy", "audio_overlap_speaking_ratio"},
-# }
-
-
-#TEST PCA SUR INV REGRESSION STEPWISE 2026-05-28
+# Mapping : TAS=Gaze, TMS=Speech, TRS=Face (sans face_neg). Principes :
+#   1. Modalité-pure : chaque indicateur appartient à un seul composite.
+#   2. Peu d'indicateurs par composite (leçon N=12 : sur-compositisation dégrade).
+#   3. Uniquement des features survivantes du pruning (16-feature set).
+#   4. face_negative_affect_ratio HORS composites → branche affective (voir [5]/[6]).
 REFINED_INV_COMPOSITES: dict[str, list[str]] = {
-    # TAS comportemental : coordination attention visuelle et régulation des tours.
-    # Validation MOD-11 (2026-06) : analyse directionnelle (gaze_convergence_ratio remplace
-    #              gaze_shared_visual_attention_ratio basé sur objets BIM).
-    # audio_overlap_speaking_ratio et gaze_entropy_dir_mean
-    # chargent négativement sur PC3 → à inverser lors du calcul z-score.
+    # TAS : attention partagée visuelle (gaze pur). Assumé : aucune association
+    # monoprédicteur robuste — le composite documente le résultat nul TAS
+    # (cohérent H2 « division silencieuse du travail »).
     "INV_TAS": [
-        "audio_successful_interruption_ratio",  # PC3 +0.524
-        "gaze_convergence_ratio",               # directionnelle — remplace gaze_shared_visual_attention_ratio (MOD-11)
-        "audio_overlap_speaking_ratio",         # PC3 −0.440 → INVERSE
-        "gaze_entropy_dir_mean",                # directionnelle (remplace gaze_entropy_mean_participants)
-        "gaze_entropy_mean_participants",        # PC3 −0.440 → INVERSE (legacy fallback)
+        "gaze_convergence_ratio",     # direct
+        "gaze_entropy_dir_mean",      # INVERSÉ (dispersion = − attention partagée)
     ],
-
-    # TMS comportemental : régulation temporelle et équilibre de participation.
-    # Validation : audio_pause_ratio (PC1 = 0.468),
-    #              audio_participation_entropy (PC1 = −0.463),
-    #              audio_overlap_speaking_ratio (PC1 = −0.414).
-    # Tous sur PC1 (variance la plus élevée).
+    # TMS : régulation conversationnelle (speech pur). Porte le signal empirique :
+    # participation_entropy ρ≈−0.68/−0.73 (cohésion/CRE), overlap ρ≈−0.61/−0.68,
+    # pause_ratio ρ≈+0.62. Orientation : haut = régulation contrôlée/spécialisée.
     "INV_TMS": [
-        "audio_pause_ratio",                    # PC1 +0.468
-        "audio_participation_entropy",           # PC1 −0.463 → INVERSE
-        "audio_overlap_speaking_ratio",          # PC1 −0.414 → INVERSE
+        "audio_pause_ratio",              # direct
+        "audio_participation_entropy",    # INVERSÉ
+        "audio_overlap_speaking_ratio",   # INVERSÉ
     ],
-
-    # TRS comportemental : synchronie faciale et expressivité positive.
-    # Validation : tous chargent fortement sur PC2 (loadings 0.49–0.54).
-    # face_negative_affect_ratio EXCLU : charge négativement sur PC2 (−0.349),
-    # extrait vers branche affective autonome (décision réunion).
-    # affect_balance_rate INCLUS uniquement si disponible en VR (à vérifier pipeline).
+    # TRS : synchronie expressive positive (face pur, sans affect négatif).
     "INV_TRS": [
-        "face_facial_synchrony",                # PC2 +0.537
-        "affect_balance_rate",                  # PC2 +0.523
-        "face_smile_ratio",                     # PC2 +0.489
+        "face_facial_synchrony",
+        "affect_balance_rate",
+        "face_smile_ratio",
     ],
-
-    # BRANCHE AFFECTIVE AUTONOME (hors modèle transactif principal)
-    # Décision réunion : face_negative_affect_ratio prédit 5 cibles cohésion/CRE,
-    # interprété comme régulateur affectif indépendant des modules cognitifs.
-    # "INV_AFF": [
-    #     "face_negative_affect_ratio",           # PC2 −0.349
-    # ],
 }
 
-# ---------------------------------------------------------------------------
-# Indicateurs inversés dans le composite (mode poids égaux uniquement).
-# Si COMPOSITE_WEIGHTS défini pour le composite → ce dict est ignoré.
-# Mise à jour : validations croisées PCA × régression stepwise.
-# ---------------------------------------------------------------------------
 INVERTED_COMPOSITE_INDICATORS: dict[str, set[str]] = {
-    # INV_TAS : coordination attentionnelle (MOD-11)
-    # audio_overlap : confirmé négatif (PCA −0.440 ET β=−0.84 pour CRE).
-    #   Ambigu pour SPE (β=+1.16, M9) mais modèle multicolinéaire → non retenu.
-    # gaze_entropy_dir_mean : CONFLIT — PCA −0.440 (inversion) vs β=+0.52 pour TSK
-    #   (pas d'inversion). Inversion PCA maintenue provisoirement ; voir note 2.
-    # gaze_convergence_ratio : NON inversé (remplace gaze_shared_visual_attention_ratio MOD-11)
-    #   Indicateur de coordination positive → signe positif attendu dans le composite.
-    "INV_TAS": {
-        "audio_overlap_speaking_ratio",      # PCA −0.440 ✓, CRE β=−0.84 ✓
-        "gaze_entropy_dir_mean",             # directionnelle (remplace gaze_entropy_mean_participants)
-        "gaze_entropy_mean_participants",    # PCA −0.440 ✓, TSK β=+0.52 ✗ → CONFLIT (legacy)
-    },
-
-    # INV_TMS : régulation temporelle de la parole
-    # audio_participation_entropy : largement confirmé (β=−0.75 à −0.80
-    #   pour Cohesion, TSK, COM — trois modèles indépendants).
-    "INV_TMS": {
-        "audio_participation_entropy",       # PCA −0.463 ✓, régression ✓✓✓
-    },
-
-    # INV_TRS : synchronie faciale et expressivité positive
-    # face_smile_ratio : CONFLIT — PCA +0.489 (pas d'inversion) vs β=−1.00
-    #   pour performance (M3). Voir note 3 avant décision.
-    # Aucune inversion retenue dans ce composite pour l'instant.
-    # "INV_TRS": set(),  # vide → omis du dict
-
-    # INV_AFF : branche affective autonome
-    # face_negative_affect_ratio : β positif cohérent sur 5 cibles (+0.37 à +0.87).
-    # Pas d'inversion : sens direct (affect négatif → prédicteur positif de cohésion).
-    # "INV_AFF": set(),  # vide → omis du dict
+    "INV_TAS": {"gaze_entropy_dir_mean"},
+    "INV_TMS": {"audio_participation_entropy", "audio_overlap_speaking_ratio"},
+    # INV_TRS : aucune inversion.
 }
+# Poids égaux (z-mean). Justification : les loadings PCA de l'ancienne config
+# sont périmés (espace de features différent) et le mécanisme poids-signés ×
+# INVERTED_COMPOSITE_INDICATORS produisait des doubles inversions. À N=12,
+# les poids égaux sont l'option la plus défendable (pas d'estimation de poids
+# possible ; cf. Kommol et al. 2025 pour la pratique équivalente).
+COMPOSITE_WEIGHTS: dict[str, dict[str, float]] = {}
 
-# ---------------------------------------------------------------------------
-# Poids des indicateurs par composite.
-# Source : loadings PCA (structure latente), validés / signalés par β régression.
-# Magnitudes PCA conservées comme source principale ; les β de régression
-# annotent la cohérence directionnelle mais ne remplacent pas les poids
-# (les β dépendent de la cible, les loadings PCA sont target-indépendants).
-# ---------------------------------------------------------------------------
-COMPOSITE_WEIGHTS: dict[str, dict[str, float]] = {
-
-    # PC3 – Coordination attentionnelle / TAS (MOD-11 : gaze directionnelle)
-    # gaze_convergence_ratio : remplace gaze_shared_visual_attention_ratio (analyse objet BIM legacy).
-    #   Loading PCA estimé +0.363 (PC3 directionnelle) ; poids provisoire — recalibrer après
-    #   revalidation PCA avec dataset directionnelle complet.
-    # ⚠ gaze_entropy_mean_participants : loading −0.440 MAIS β=+0.52 pour TSK
-    #   → conflit non résolu. Poids PCA maintenu ; résoudre avant soumission.
-    "INV_TAS": {
-        "audio_successful_interruption_ratio":  0.524,   # PC3 +0.524 | perf β=+0.43 ✓
-        "gaze_convergence_ratio":               0.363,   # directionnelle — MOD-11 (remplace gaze_shared_visual_attention_ratio)
-        "audio_overlap_speaking_ratio":        -0.440,   # PC3 −0.440 | CRE β=−0.84 ✓ / SPE β=+1.16 ⚠
-        "gaze_entropy_dir_mean":               -0.440,   # directionnelle (remplace gaze_entropy_mean_participants)
-        "gaze_entropy_mean_participants":      -0.440,   # PC3 −0.440 | TSK β=+0.52 ❌ conflit (legacy)
-    },
-
-    # PC1 – Régulation temporelle de la parole / TMS
-    # audio_pause_ratio : β=+0.53 (M8), +1.50 (M9).
-    #   M9 exclu pour calcul du poids : multicolinéarité probable avec
-    #   audio_overlap (VIF à vérifier). Poids PCA retenu.
-    "INV_TMS": {
-        "audio_pause_ratio":            0.468,   # PC1 +0.468 | SPE β=+0.53 ✓ (M8 fiable)
-        "audio_participation_entropy": -0.463,   # PC1 −0.463 | cohésion/TSK/COM β=−0.75 à −0.80 ✓✓✓
-    },
-
-    # PC2 – Synchronie faciale et expressivité positive / TRS
-    # ⚠ face_smile_ratio : loading +0.489 MAIS β=−1.00 pour performance (M3).
-    #   Signe inversé par rapport à PC2. Hypothèse : sourire en VR = artefact
-    #   de détection ou indicateur de tension sociale, pas de valence positive.
-    #   À trancher (voir note 3) avant de figer le poids.
-    "INV_TRS": {
-        "face_facial_synchrony":  0.537,   # PC2 +0.537 | SOC β=+0.48 ✓
-        "affect_balance_rate":    0.523,   # PC2 +0.523 | perf β=+0.68 ✓
-        "face_smile_ratio":       0.489,   # PC2 +0.489 | perf β=−1.00 ❌ conflit — voir note 3
-    },
-
-    # Branche affective autonome / AFF
-    # Poids = |loading PC2| en valeur absolue.
-    # Sens direct : ratio affect négatif élevé → prédicteur positif cohésion/CRE.
-    # β moyen pondéré ≈ +0.60 sur 5 cibles (SOC, TSK, COM, Cohesion, CRE).
-    "INV_AFF": {
-        "face_negative_affect_ratio": 0.349,   # |PC2 −0.349| | 5 cibles β=+0.37 à +0.87 ✓✓✓
-    },
-}
+AFFECT_TARGETS: list[str] = ["CRE", "SOC", "TSK", "COM", COHESION_SCORE]
 
 # ---------------------------------------------------------------------------
 # [5] Branche affective (face_negative_affect_ratio comme indicateur autonome)
@@ -285,37 +133,16 @@ COMPOSITE_WEIGHTS: dict[str, dict[str, float]] = {
 
 AFFECT_MARKER = "face_negative_affect_ratio"
 
-# Cibles de la branche affective.
-# Justifications stepwise (rapport 2026-05-19) :
-# - SOC : β std=+0.68 (M9 univarié) → +0.79 (M11 trivarié)
-# - TSK : β std=+0.53 (M13 en F+G)
-# - COM : prédicteur principal de Cohésion globale via face_neg
-# - COHESION_SCORE : β std=+0.84 (M3 avec shared_obj_episode)
-# - CRE : ρ bivariée = +0.62 (p=0.030), β complémentaire +0.42 (M6)
-AFFECT_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]#["SOC", "TSK", "COM", COHESION_SCORE, "CRE"]
+# Cibles de la branche affective (justifications stepwise, rapport 2026-05-19 :
+# SOC β=+0.79, TSK β=+0.53, COM prédicteur de cohésion, COHESION β=+0.84, CRE ρ=+0.62).
 
 # ---------------------------------------------------------------------------
 # [6] Cibles structurelles par composite
 # ---------------------------------------------------------------------------
-# Justifications empiriques pour chaque chemin :
-
-# INV_TAS prédit :
-# - PERFORMANCE (toujours implicite) : gaze_attention β=-0.67 (M1, R²=0.45)
-# - SPE : shared_obj_episode_rate β=+0.69 (M7, R²=0.47)
-TAS_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]#["SPE"]
-
-# INV_TMS prédit :
-# - COR : aucun modèle stepwise significatif → COR exclu
-# - CRE : audio_overlap_speaking_ratio β=-0.81 (M5, R²=0.65)
-# - SPE : audio_pause_ratio + audio_overlap_speaking_ratio (M8, R²=0.68)
-#   Note : SPE est doublement prédit (INV_TAS et INV_TMS)
-# - PERFORMANCE (implicite) : pas de chemin direct robuste
-TMS_STRUCTURAL_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]#["CRE", "SPE"]
-
-# INV_TRS prédit :
-# - SOC : face_facial_synchrony complémente face_neg dans M6 (β=+0.48)
-# - PERFORMANCE (implicite) : pas de chemin direct robuste
-TRS_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]#["SOC"]
+# Chaque composite est testé contre l'ensemble des dimensions questionnaire + cohésion.
+TAS_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]
+TMS_STRUCTURAL_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]
+TRS_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCORE]
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +151,7 @@ TRS_TARGETS: list[str] = ["COR", "CRE", "SPE", "SOC", "TSK", "COM", COHESION_SCO
 # Documente la dilution des corrélations fortes (rme/c_score → gaze_attention
 # ρ ~ -0.93/-0.88) dans l'agrégation INPUT_composite.
 BIVARIATE_CORR_ROOTS = ROOT_CAUSES
-BIVARIATE_CORR_TARGET = ""
+BIVARIATE_CORR_TARGET = "INV_TMS"
 
 # ---------------------------------------------------------------------------
 # [8] Ajusteurs pour chemins directs INPUT → performance (1 médiateur/équation)
@@ -359,8 +186,9 @@ REFINED_COMPOSITE_THEORY: dict[str, str] = {
         "(Nummenmaa et al. 2023 ; Ekman, Davidson & Friesen 1990)"
     ),
     AFFECT_MARKER: (
-        "Substrat affectif autonome : marqueur de tristesse FACS "
-        "(Ekman & Friesen 1978) — branche parallèle à la triade transactive"
+        "Substrat affectif autonome : engagement expressif bas du visage (AU15+AU17, "
+        "condition FACS nécessaire mais non suffisante de tristesse, Ekman & Friesen 1978) "
+        "— branche parallèle à la triade transactive"
     ),
 }
 
@@ -395,6 +223,7 @@ MLM_MCMC_CONFIG = {
     "warmup": 2000,
     "rhat_threshold": 1.01,
     "ess_threshold": 400,
+    "seed": 42,  # seed d'échantillonnage MCMC fixe (reproductibilité, documenté dans la note)
 }
 MLM_BAYESIAN_PRIORS = {
     "fixed_effects": "normal(0, 1)",
@@ -410,9 +239,6 @@ MLM_BAYESIAN_PRIORS = {
 COMPUTE_VIF_INTRA_COMPOSITE: bool = True
 VIF_THRESHOLD_WARNING: float = 5.0
 VIF_THRESHOLD_CRITICAL: float = 10.0
-
-# Alias de compatibilite interne (conserve pour les usages legacy)
-ADDITIONAL_INV_TAS_TARGETS = TAS_TARGETS
 
 # ---------------------------------------------------------------------------
 # FONCTIONS UTILITAIRES
@@ -1430,13 +1256,11 @@ def run_refined_path_analysis_vr(
 
     # Toutes les variables potentiellement necessaires.
     _affect_vars = ([AFFECT_MARKER] + AFFECT_TARGETS) if INCLUDE_AFFECT else []
-    retained_variables = sorted(set(
+    retained_variables = sorted({v for v in (
         [PERFORMANCE, COHESION_SCORE, BIVARIATE_CORR_TARGET]
-        + _affect_vars
-        + ROOT_CAUSES + TMS_DIMS + COHESION_DIMS
-        + TAS_TARGETS
+        + _affect_vars + ROOT_CAUSES + TMS_DIMS + COHESION_DIMS + TAS_TARGETS
         + [item for vals in REFINED_INV_COMPOSITES.values() for item in vals]
-    ))
+    ) if v})
     df, availability = _canonicalize_columns(df, retained_variables)
     df, cohesion_source = _ensure_cohesion(df)
     if COHESION_SCORE in availability["variable"].values:
@@ -1445,11 +1269,33 @@ def run_refined_path_analysis_vr(
         availability.loc[availability["variable"] == COHESION_SCORE, "n_non_missing"] = (
             int(df[COHESION_SCORE].notna().sum()) if COHESION_SCORE in df.columns else 0
         )
-    availability.to_csv(out_dir / "path_analysis_vr_availability.csv", index=False, encoding="utf-8-sig")
 
     # Construction des composites : INPUT_composite (causes racines) + INV transactifs.
     composite_specs_full = {INPUT_COMPOSITE: ROOT_CAUSES, **REFINED_INV_COMPOSITES}
     df, measurement, composite_specs = _make_refined_composites(df, composite_specs_full)
+
+    # Mise à jour de la disponibilité pour les COMPOSITES (INV_TAS/TMS/TRS,
+    # INPUT_composite) : ils n'existent qu'après _make_refined_composites. Sans
+    # cela, la table affiche par ex. « INV_TMS | False | 0 » alors que les chemins
+    # correspondants tournent bien (évaluation faite avant création du composite).
+    for _comp in [INPUT_COMPOSITE, "INV_TAS", "INV_TMS", "INV_TRS"]:
+        if _comp not in df.columns:
+            continue
+        _n = int(df[_comp].notna().sum())
+        _row_mask = availability["variable"] == _comp
+        if _row_mask.any():
+            availability.loc[_row_mask, "source_column"] = _comp
+            availability.loc[_row_mask, "available"] = _n > 0
+            availability.loc[_row_mask, "n_non_missing"] = _n
+        else:
+            availability = pd.concat([availability, pd.DataFrame([{
+                "variable": _comp,
+                "source_column": _comp,
+                "available": _n > 0,
+                "n_non_missing": _n,
+            }])], ignore_index=True)
+
+    availability.to_csv(out_dir / "path_analysis_vr_availability.csv", index=False, encoding="utf-8-sig")
     input_indicators = composite_specs.get(INPUT_COMPOSITE, [])
     inv_composites = [
         c for c in ["INV_TAS", "INV_TMS", "INV_TRS"]
@@ -1925,7 +1771,7 @@ def _run_mlm_icc_analysis(
         sigma_e ~ HalfCauchy(0, 1)
         ICC = sigma_u^2 / (sigma_u^2 + sigma_e^2)
 
-    Modeles contextuels (18 modeles : 3 composites x 6 dimensions) :
+    Modeles contextuels (18 sans affect / 24 avec : {3 composites + affect} x 6 dimensions) :
         score_ij ~ Normal(alpha + beta_c * X_c_j + u_j, sigma_e)
         Parametrisation non-centree (obligatoire a petit K) :
             z_u ~ Normal(0, 1, shape=K)  ;  u_j = z_u * sigma_u
@@ -1959,6 +1805,39 @@ def _run_mlm_icc_analysis(
 
     cfg = MLM_MCMC_CONFIG
 
+    def _mcmc_draws_tune(config: dict) -> tuple[int, int]:
+        """Dérive un couple (draws, tune) toujours valide pour pm.sample().
+
+        Convention : `iter` = nombre TOTAL d'itérations (warmup inclus), `warmup`
+        = phase de tuning. draws = iter - warmup. Robustesse : si iter <= warmup
+        (ex. iter=5 pour un run de test), on garantit draws >= 1 et on borne tune
+        à iter-1, afin de ne jamais passer un draws négatif à PyMC (qui échoue).
+        """
+        total = int(config.get("iter", 4000))
+        warmup = int(config.get("warmup", total // 2))
+        if total < 2:
+            total = 2
+        tune = max(1, min(warmup, total - 1))
+        draws = max(1, total - tune)
+        return draws, tune
+
+    def _count_divergences(trace) -> int:
+        """Nombre de transitions divergentes NUTS sur l'ensemble des chaînes.
+
+        Diagnostic standard des modèles hiérarchiques à petit K : une géométrie en
+        entonnoir de sigma_u peut produire des divergences malgré Rhat≈1 / ESS élevé.
+        Retourne -1 si l'info n'est pas disponible.
+        """
+        try:
+            if hasattr(trace, "sample_stats") and "diverging" in trace.sample_stats:
+                return int(trace.sample_stats["diverging"].values.sum())
+        except Exception:
+            pass
+        return -1
+
+    # Seed d'échantillonnage MCMC (fixe, documenté pour la reproductibilité).
+    _MCMC_SEED = int(cfg.get("seed", 42))
+
     # ------------------------------------------------------------------
     # Composites INV niveau groupe — calculés exactement comme en 3.1.3
     # ------------------------------------------------------------------
@@ -1987,12 +1866,30 @@ def _run_mlm_icc_analysis(
             return pd.Series(np.nan, index=df.index)
         return pd.concat(parts, axis=1).mean(axis=1)
 
+    # Prédicteurs L2 du MLM = 3 composites transactifs + la branche affective
+    # standalone (face_negative_affect_ratio z-scorée). L'affect n'est PAS un
+    # composite (il est hors REFINED_INV_COMPOSITES par design) mais reste un
+    # prédicteur L2 légitime : feature face disponible pour les 12 groupes (K=12).
     composite_names = list(REFINED_INV_COMPOSITES.keys())  # INV_TAS, INV_TMS, INV_TRS
+    if INCLUDE_AFFECT:
+        composite_names = composite_names + [AFFECT_MARKER]
 
-    # Construire un DataFrame groupe x composite (une ligne par groupe, dedupliqué)
+    def _build_affect_col(df: pd.DataFrame) -> pd.Series:
+        """Prédicteur L2 affectif standalone : face_negative_affect_ratio z-scorée."""
+        col = _resolve_col(df, AFFECT_MARKER)
+        if col is None:
+            return pd.Series(np.nan, index=df.index)
+        s = pd.to_numeric(df[col], errors="coerce")
+        m, sd = s.mean(), s.std()
+        return (s - m) / sd if sd > 0 else (s - m)
+
+    # Construire un DataFrame groupe x prédicteur L2 (une ligne par groupe, dedupliqué)
     comp_df = merged_g[["group_id"]].drop_duplicates().copy()
     for cname in composite_names:
-        col_vals = _build_composite_col(merged_g, cname)
+        if cname == AFFECT_MARKER:
+            col_vals = _build_affect_col(merged_g)
+        else:
+            col_vals = _build_composite_col(merged_g, cname)
         tmp = merged_g[["group_id"]].copy()
         tmp[cname] = col_vals.values
         agg = tmp.groupby("group_id")[cname].mean()
@@ -2014,11 +1911,12 @@ def _run_mlm_icc_analysis(
         prior_sigma: float,
         seed: int,
     ) -> dict:
-        """Retourne dict avec beta_mean, beta_sd, hdi_lo, hdi_hi, rhat, ess, method."""
+        """Retourne dict avec beta_mean, beta_sd, hdi_lo, hdi_hi, rhat, ess, n_divergent, method."""
         result = {
             "beta_mean": np.nan, "beta_sd": np.nan,
             "hdi_lo": np.nan, "hdi_hi": np.nan,
             "rhat": np.nan, "ess": np.nan,
+            "n_divergent": np.nan,
             "method": "insuffisant",
         }
         if not _PYMC_OK:
@@ -2033,7 +1931,7 @@ def _run_mlm_icc_analysis(
         y_sc = (y_c - y_m) / y_s
         x_sc = (x_c - x_m) / x_s
 
-        draws = cfg["iter"] - cfg["warmup"]
+        draws, tune = _mcmc_draws_tune(cfg)
         try:
             with pm.Model() as ctx_model:
                 alpha = pm.Normal("alpha", mu=0.0, sigma=1.0)
@@ -2049,7 +1947,7 @@ def _run_mlm_icc_analysis(
                     warnings.simplefilter("ignore")
                     trace = pm.sample(
                         draws=draws,
-                        tune=cfg["warmup"],
+                        tune=tune,
                         chains=cfg["chains"],
                         cores=1,
                         target_accept=0.95,
@@ -2067,11 +1965,14 @@ def _run_mlm_icc_analysis(
             ess_val = az.ess(trace)["beta_c"].values
             result["rhat"] = float(rhat_val.item()) if hasattr(rhat_val, "item") else float(rhat_val)
             result["ess"] = float(ess_val.item()) if hasattr(ess_val, "item") else float(ess_val)
+            result["n_divergent"] = _count_divergences(trace)
             result["method"] = "PyMC5_MCMC_non_centree"
 
-            # Si ESS bas, ré-échantillonnage avec plus d'itérations
+            # Si ESS bas, ré-échantillonnage avec plus d'itérations (2× le run
+            # principal ; borné par _mcmc_draws_tune pour rester valide en run de test).
             if result["ess"] < cfg["ess_threshold"]:
                 try:
+                    draws2, tune2 = 2 * draws, 2 * tune
                     with pm.Model() as ctx_model2:
                         alpha2 = pm.Normal("alpha", mu=0.0, sigma=1.0)
                         beta_c2 = pm.Normal("beta_c", mu=0.0, sigma=prior_sigma)
@@ -2084,8 +1985,8 @@ def _run_mlm_icc_analysis(
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore")
                             trace2 = pm.sample(
-                                draws=4000,
-                                tune=2000,
+                                draws=draws2,
+                                tune=tune2,
                                 chains=cfg["chains"],
                                 cores=1,
                                 target_accept=0.95,
@@ -2103,7 +2004,8 @@ def _run_mlm_icc_analysis(
                     ess2 = az.ess(trace2)["beta_c"].values
                     result["rhat"] = float(rhat2.item()) if hasattr(rhat2, "item") else float(rhat2)
                     result["ess"] = float(ess2.item()) if hasattr(ess2, "item") else float(ess2)
-                    result["method"] = "PyMC5_MCMC_non_centree_6000iter"
+                    result["n_divergent"] = _count_divergences(trace2)
+                    result["method"] = f"PyMC5_MCMC_non_centree_reechant({draws2 + tune2}iter)"
                 except Exception:
                     pass
         except Exception as exc:
@@ -2124,51 +2026,69 @@ def _run_mlm_icc_analysis(
         # --- ICC ANOVA (point de reference) ---
         icc_pt, s2b, s2w = _icc_anova_point(sub)
 
-        # --- ICC bayesien (modele nul, inchange) ---
+        # --- ICC bayesien (modele nul) ---
         icc_mean = icc_pt
         icc_sd = np.nan
         icc_hdi_lo, icc_hdi_hi = np.nan, np.nan
         rhat_null = np.nan
         ess_null = np.nan
+        ndiv_null = np.nan
+        icc_mean_hn = np.nan
+        icc_hdi_lo_hn, icc_hdi_hi_hn = np.nan, np.nan  # variante prior HalfNormal
         method_icc = "ANOVA_point_only"
 
-        if _PYMC_OK and bayes:
+        def _fit_null_icc(sigma_u_prior: str, seed: int):
+            """Ajuste le modèle nul ICC avec un prior donné sur sigma_u.
+
+            sigma_u_prior : "halfcauchy" (référence) ou "halfnormal" (sensibilité).
+            Retourne (icc_mean, icc_sd, hdi_lo, hdi_hi, rhat, ess, n_divergent) ou None.
+            """
             group_idx = pd.Categorical(sub["group_id"], categories=groups).codes
             y_obs = sub[INDIVIDUAL_SCORE_COL].values.astype(float)
             grand_mean_obs = float(np.mean(y_obs))
             y_std = float(np.std(y_obs)) if np.std(y_obs) > 0 else 1.0
-
-            try:
-                with pm.Model() as null_model:
+            with pm.Model():
+                if sigma_u_prior == "halfnormal":
+                    sigma_u = pm.HalfNormal("sigma_u", sigma=1.0)
+                else:
                     sigma_u = pm.HalfCauchy("sigma_u", beta=1.0)
-                    sigma_e = pm.HalfCauchy("sigma_e", beta=1.0)
-                    mu_grand = pm.Normal("mu_grand", mu=0.0, sigma=1.0)
-                    u_j = pm.Normal("u_j", mu=0.0, sigma=sigma_u, shape=K)
-                    mu_ij = mu_grand + u_j[group_idx]
-                    y_sc = (y_obs - grand_mean_obs) / y_std
-                    _ = pm.Normal("y_obs", mu=mu_ij, sigma=sigma_e, observed=y_sc)
-                    _ = pm.Deterministic("ICC", sigma_u**2 / (sigma_u**2 + sigma_e**2))
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        trace_null = pm.sample(
-                            draws=cfg["iter"] - cfg["warmup"],
-                            tune=cfg["warmup"],
-                            chains=cfg["chains"],
-                            cores=1,
-                            random_seed=42,
-                            progressbar=False,
-                            return_inferencedata=True,
-                        )
-                icc_samples = trace_null.posterior["ICC"].values.flatten()
-                icc_mean = float(np.mean(icc_samples))
-                icc_sd = float(np.std(icc_samples))
-                hdi = az.hdi(trace_null, var_names=["ICC"], hdi_prob=0.95)["ICC"].values
-                icc_hdi_lo, icc_hdi_hi = float(hdi[0]), float(hdi[1])
-                rhat_null = float(az.rhat(trace_null)["ICC"].values.item())
-                ess_null = float(az.ess(trace_null)["ICC"].values.item())
+                sigma_e = pm.HalfCauchy("sigma_e", beta=1.0)
+                mu_grand = pm.Normal("mu_grand", mu=0.0, sigma=1.0)
+                u_j = pm.Normal("u_j", mu=0.0, sigma=sigma_u, shape=K)
+                mu_ij = mu_grand + u_j[group_idx]
+                y_sc = (y_obs - grand_mean_obs) / y_std
+                _ = pm.Normal("y_obs", mu=mu_ij, sigma=sigma_e, observed=y_sc)
+                _ = pm.Deterministic("ICC", sigma_u**2 / (sigma_u**2 + sigma_e**2))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    _dn, _tn = _mcmc_draws_tune(cfg)
+                    tr = pm.sample(draws=_dn, tune=_tn, chains=cfg["chains"], cores=1,
+                                   target_accept=0.95, random_seed=seed,
+                                   progressbar=False, return_inferencedata=True)
+            s = tr.posterior["ICC"].values.flatten()
+            hdi = az.hdi(tr, var_names=["ICC"], hdi_prob=0.95)["ICC"].values
+            return (float(np.mean(s)), float(np.std(s)), float(hdi[0]), float(hdi[1]),
+                    float(az.rhat(tr)["ICC"].values.item()), float(az.ess(tr)["ICC"].values.item()),
+                    _count_divergences(tr))
+
+        if _PYMC_OK and bayes:
+            try:
+                icc_mean, icc_sd, icc_hdi_lo, icc_hdi_hi, rhat_null, ess_null, ndiv_null = \
+                    _fit_null_icc("halfcauchy", seed=_MCMC_SEED)
                 method_icc = "PyMC5_MCMC_intercepts_aleatoires"
+                # Diagnostic 2 : sensibilité du prior de variance (sigma_u HalfNormal).
+                try:
+                    icc_mean_hn, _sd_hn, icc_hdi_lo_hn, icc_hdi_hi_hn, *_ = \
+                        _fit_null_icc("halfnormal", seed=_MCMC_SEED + 7)
+                except Exception:
+                    pass
             except Exception as exc:
                 method_icc = f"PyMC5_echec({type(exc).__name__}); ANOVA_fallback"
+
+        # Le verdict d'agrégation (ICC≥0.30) est-il stable entre les deux priors de sigma_u ?
+        _agg_ref = np.isfinite(icc_mean) and icc_mean >= 0.30
+        _agg_hn = np.isfinite(icc_mean_hn) and icc_mean_hn >= 0.30
+        _prior_var_stable = (not np.isfinite(icc_mean_hn)) or (_agg_ref == _agg_hn)
 
         row_icc: dict = {
             "dimension": dim,
@@ -2181,14 +2101,21 @@ def _run_mlm_icc_analysis(
             "ICC_bayes_sd": round(icc_sd, 4) if np.isfinite(icc_sd) else np.nan,
             "ICC_hdi95_low": round(icc_hdi_lo, 4) if np.isfinite(icc_hdi_lo) else np.nan,
             "ICC_hdi95_high": round(icc_hdi_hi, 4) if np.isfinite(icc_hdi_hi) else np.nan,
+            # Sensibilité au prior de variance (sigma_u ~ HalfNormal(0,1))
+            "ICC_bayes_mean_HN": round(icc_mean_hn, 4) if np.isfinite(icc_mean_hn) else np.nan,
+            "ICC_hdi95_low_HN": round(icc_hdi_lo_hn, 4) if np.isfinite(icc_hdi_lo_hn) else np.nan,
+            "ICC_hdi95_high_HN": round(icc_hdi_hi_hn, 4) if np.isfinite(icc_hdi_hi_hn) else np.nan,
+            "prior_var_stable": bool(_prior_var_stable),
             "Rhat_null": round(rhat_null, 4) if np.isfinite(rhat_null) else np.nan,
             "ESS_null": round(ess_null, 0) if np.isfinite(ess_null) else np.nan,
+            "n_divergent": int(ndiv_null) if np.isfinite(ndiv_null) and ndiv_null >= 0 else np.nan,
             "method": method_icc,
         }
         icc_rows.append(row_icc)
 
-        # --- 18 modeles contextuels : 3 composites x 6 dimensions ---
-        seed_base = 100
+        # --- Modeles contextuels : {3 composites + affect} x 6 dimensions ---
+        # (18 modeles sans affect, 24 avec INCLUDE_AFFECT).
+        seed_base = _MCMC_SEED + 100
         for c_idx, cname in enumerate(composite_names):
             # Fusionner les scores individus avec le composite L2
             sub_ctx = sub.merge(
@@ -2250,6 +2177,7 @@ def _run_mlm_icc_analysis(
                 "robust_hdi": rob1,
                 "Rhat": round(r1["rhat"], 4) if np.isfinite(r1["rhat"]) else np.nan,
                 "ESS": round(r1["ess"], 0) if np.isfinite(r1["ess"]) else np.nan,
+                "n_divergent": int(r1["n_divergent"]) if np.isfinite(r1.get("n_divergent", np.nan)) and r1["n_divergent"] >= 0 else np.nan,
                 "K_groupes": ctx_K,
                 "N_individus": ctx_N,
                 "method": r1["method"],
@@ -2270,21 +2198,42 @@ def _run_mlm_icc_analysis(
         ).reset_index(drop=True)
 
     method_str = "PyMC5_MCMC" if (_PYMC_OK and bayes) else ("ANOVA_only" if not bayes else "ANOVA_fallback")
+    _n_pred = len(composite_names)  # 3 composites (+ affect si INCLUDE_AFFECT)
+    _n_ctx = _n_pred * len(INDIVIDUAL_DIMS)
+    _affect_note = (
+        f" Le 4e predicteur L2 est la branche affective standalone "
+        f"({AFFECT_MARKER}, z-scoree niveau groupe, hors composites transactifs)."
+        if INCLUDE_AFFECT else ""
+    )
+    # Total divergences sur l'ensemble des modeles (nuls + contextuels) pour attester
+    # l'absence de pathologie d'echantillonnage (diagnostic 1).
+    _ndiv_ctx = pd.to_numeric(df_ctx.get("n_divergent"), errors="coerce").fillna(0).sum() if not df_ctx.empty else 0
+    _ndiv_null = sum(int(r.get("n_divergent", 0) or 0) for r in icc_rows if np.isfinite(r.get("n_divergent", np.nan) or np.nan))
+    _ndiv_total = int(_ndiv_ctx) + int(_ndiv_null)
     note_impl = (
-        f"Implementation : {method_str}. "
-        "Modele nul inchange (intercepts aleatoires) : score_ij ~ Normal(mu + u_j, sigma_e), "
+        f"Implementation : {method_str}. Seed d'echantillonnage fixe = {_MCMC_SEED} (reproductibilite). "
+        "Modele nul (intercepts aleatoires) : score_ij ~ Normal(mu + u_j, sigma_e), "
         "mu_grand ~ Normal(0,1), sigma_u/sigma_e ~ HalfCauchy(0,1) (Gelman et al. 2013). "
         "ICC = sigma_u^2 / (sigma_u^2 + sigma_e^2) — moyenne posterieure + HDI 95%. "
-        "18 modeles contextuels (3 composites INV x 6 dimensions) : "
+        f"{_n_ctx} modeles contextuels ({_n_pred} predicteurs L2 x {len(INDIVIDUAL_DIMS)} dimensions) : "
         "score_ij ~ Normal(alpha + beta_c * X_c_j + u_j, sigma_e), "
         "parametrisation non-centree z_u ~ N(0,1), u_j = z_u * sigma_u (obligatoire a petit K), "
         "alpha ~ N(0,1), beta_c ~ N(0,1) [prior par defaut, Burkner 2017], "
-        "sigma_u ~ HalfCauchy(0,1), sigma_e ~ HalfNormal(0,1). "
-        "Sensibilite aux priors : re-echantillonnage avec beta_c ~ N(0,0.5) pour chaque modele. "
+        "sigma_u ~ HalfCauchy(0,1), sigma_e ~ HalfNormal(0,1)."
+        f"{_affect_note} "
+        "Sensibilite aux priors : (a) coefficient beta_c ~ N(0,0.5) pour chaque modele contextuel ; "
+        "(b) variance sigma_u ~ HalfNormal(0,1) pour les modeles nuls ICC (verification que le "
+        "verdict d'agregation ICC>=0.30 tient — colonnes *_HN / prior_var_stable). "
+        f"Diagnostic de divergences NUTS : {_ndiv_total} transition(s) divergente(s) au total sur "
+        f"les {_n_ctx}+{len(INDIVIDUAL_DIMS)} modeles (0 attendu grace a la parametrisation non-centree "
+        "+ target_accept=0.95 ; une divergence signale une geometrie en entonnoir de sigma_u). "
         f"MCMC : {cfg['chains']} chaines, {cfg['iter']} iterations ({cfg['warmup']} warmup), "
         f"target_accept=0.95, convergence sur Rhat < {cfg['rhat_threshold']} et ESS > {cfg['ess_threshold']}. "
         "K=12 groupes VR (11 pour INV_TMS), n=3 individus/groupe — "
-        "inference exploratoire uniquement (Maas & Hox 2005 : K >= 30 recommande)."
+        "inference exploratoire uniquement (Maas & Hox 2005 : K >= 30 recommande). "
+        "Note : la Cohesion globale n'est PAS modelisee au niveau multiniveau — c'est la moyenne "
+        "des sous-dimensions SOC/TSK/COM deja modelisees ; l'inclure serait redondant (le resultat "
+        f"FDR affect->Cohesion globale a sa contrepartie via les sous-dimensions)."
     )
 
     return pd.DataFrame(icc_rows), df_ctx, note_impl

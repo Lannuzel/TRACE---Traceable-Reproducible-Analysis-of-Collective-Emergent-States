@@ -220,7 +220,7 @@ python analyze_inv_structure.py \
     --out ../results/results_inv_structure \
     --max-missing 0.20 \
     --min-cumvar 0.70 \
-    --prune-threshold 0.80
+    --prune-threshold 0.85   # défaut = REDUNDANCY_CORR_THRESHOLD (config/inv_features_config.py)
 
 # Single mode
 python analyze_inv_structure.py --only-pruning-mode with      # results/with_pruning/

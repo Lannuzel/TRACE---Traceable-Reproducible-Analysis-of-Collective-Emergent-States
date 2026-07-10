@@ -119,6 +119,7 @@ from py.theory_diagrams import generate_computational_diagram, generate_theory_d
 from py.cfactor_population_report import generate_cfactor_population_report
 from py.corr import (
     add_two_plots_row,
+    bh_fdr,
     fmt2,
     md_table_highlight,
     n_units,
@@ -244,8 +245,10 @@ from config import (
     is_excluded_inv_feature,
 )
 from config.inv_features_config import (
+    REDUNDANCY_CORR_THRESHOLD,
     REGRESSION_FORCE_INCLUDE,
     REGRESSION_RETAINED_INV_FEATURES,
+    get_frozen_inv_feature_space,
 )
 
 
@@ -268,6 +271,14 @@ P_COLOR_THRESH = [(0.01, colors.orange), (0.05, colors.yellow)]
 
 COHESION_SUBDIM_COLS = ["SOC", "TSK", "COM"]
 SUPPLEMENTAL_BOOTSTRAP_B = 5000
+
+# Familles de features INV par bloc modalité (pour restreindre les blocs
+# corrélationnels inférentiels aux features de la modalité courante — point 3).
+_COHESION_FAMILY_MAP: dict[str, tuple[str, ...]] = {
+    "Speech": ("audio",),
+    "Face": ("face", "affect"),
+    "Gaze": ("gaze",),
+}
 
 DIMENSION_LABELS_FULL = {
     "COR": "Coordination (Michinov, 2007)",
@@ -1427,11 +1438,17 @@ def render_refined_path_analysis_vr_section(
         keep_cols = [c for c in ["root", "target", "n", "rho_spearman", "IC95", "warning"] if c in bivariate_show.columns]
         bivariate_show = bivariate_show[keep_cols].copy()
         bivariate_show = bivariate_show.rename(columns={"root": "cause_racine", "rho_spearman": "rho (Spearman)"})
-        bivariate_title = "Corrélations bivariées Spearman : causes racines individuelles → gaze_attention_coordination_idx"
+
+        # Cible réelle dérivée des données (jamais figée) : la colonne target du
+        # tableau bivarié reflète BIVARIATE_CORR_TARGET défini dans pls_sem_vr.py.
+        _bivar_target = str(bivariate_corr["target"].dropna().iloc[0]) if "target" in bivariate_corr.columns and bivariate_corr["target"].notna().any() else "la cible INV"
+        bivariate_title = (
+            f"Corrélations bivariées Spearman : causes racines individuelles → {_bivar_target}"
+        )
         bivariate_note = (
-            "Note : ces corrélations bivariées documentent la dilution des associations individuelles très fortes "
-            "(RME : ρ ≈ −0.93 ; c_score : ρ ≈ −0.88) dans l'agrégation INPUT_composite à poids égaux. "
-            "Limite inhérente à l'approche par composite formatif."
+            f"Note : ces corrélations bivariées (causes racines → {_bivar_target}) documentent la dilution "
+            "des associations individuelles dans l'agrégation INPUT_composite à poids égaux. "
+            "Limite inhérente à l'approche par composite formatif ; magnitudes et signes à lire directement dans le tableau."
         )
         lines.append(f"**{bivariate_title}**\n\n")
         lines.append(md_table_highlight(bivariate_show, max_rows=20))
@@ -1491,23 +1508,27 @@ def render_sd_dispersion_section(
         pdf_elems.append(PageBreak())
     pdf_elems.append(Paragraph(title, styles[pdf_heading_style]))
 
+    q_path = results_dir / "questionnaire" / "analyse" / "scores_dimension_par_participant.csv"
+    group_ids = list(merged_master["group_id"].astype(str)) if merged_master is not None else None
+    df_ind, df_stats, note_load = _load_individual_scores(q_path, group_ids_filter=group_ids)
+
+    # K réel = nombre de groupes effectivement présents dans les stats individuelles
+    # (dérivé des données, jamais figé : le filtre scénario est piloté par
+    # INDIVIDUAL_SCENARIO_TARGETS dans pls_sem_vr.py).
+    _k_groupes = int(df_stats["group_id"].nunique()) if (df_stats is not None and not df_stats.empty and "group_id" in df_stats.columns) else 0
+
     intro = (
         "Suivant Aguinis, Gottfredson & Culpepper (2013) et la logique de décomposition variance "
         "between/within (Enders & Tofighi 2007), la dispersion intra-groupe (écart-type SD) des "
         "réponses individuelles aux états émergents capture le degré de désaccord perceptuel. "
         "Un désaccord élevé peut signaler un défaut d'émergence du construit collectif, "
         "indépendamment du niveau moyen. Cette approche permet d'exploiter la richesse multiniveau "
-        "sans MLM formel, préférable compte tenu de K=8 groupes VR S2 disponibles. "
-        "Limite principale : N_groupes = 8 après restriction aux groupes ayant des données "
-        "individuelles S2 (groupes S1 bim006, bim010, bim066, bim073_2 exclus)."
+        f"sans MLM formel, adaptée aux K={_k_groupes} groupes VR disposant de données individuelles. "
+        f"Limite principale : N_groupes = {_k_groupes}, faible puissance pour les effets modérés."
     )
     lines.append(intro + "\n\n")
     pdf_elems.append(Paragraph(intro, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.08 * inch))
-
-    q_path = results_dir / "questionnaire" / "analyse" / "scores_dimension_par_participant.csv"
-    group_ids = list(merged_master["group_id"].astype(str)) if merged_master is not None else None
-    df_ind, df_stats, note_load = _load_individual_scores(q_path, group_ids_filter=group_ids)
 
     lines.append(f"*{note_load}*\n\n")
     pdf_elems.append(Paragraph(note_load, styles["Normal"]))
@@ -1600,7 +1621,7 @@ def render_sd_dispersion_section(
             "Note d'interprétation : un coefficient sd_X robuste (IC bootstrap excluant zéro) indique "
             "que le désaccord perceptuel intra-groupe sur la dimension X prédit la performance "
             "au-delà du niveau moyen. delta_R² mesure l'apport marginal de la SD. "
-            "Avec K=8 groupes, la puissance est très faible pour les effets modérés (d < 0.50). "
+            f"Avec K={_k_groupes} groupes, la puissance est très faible pour les effets modérés (d < 0.50). "
             "Ces résultats sont exploratoires et ne constituent pas un test confirmatoire."
         )
         lines.append(interp_note + "\n\n")
@@ -1628,7 +1649,7 @@ def render_mlm_icc_section(
     """Retourne (df_icc, df_ctx) pour la matrice de synthèse 3.1.6 — Voie A."""
     from sem.pls_sem_vr import (
         _load_individual_scores, _run_mlm_icc_analysis,
-        INDIVIDUAL_DIMS, BOOTSTRAP_B,
+        INDIVIDUAL_DIMS, BOOTSTRAP_B, MLM_MCMC_CONFIG,
     )
     title = (
         f"{section_num} Structure multiniveau des perceptions individuelles — "
@@ -1638,6 +1659,25 @@ def render_mlm_icc_section(
     if add_page_break:
         pdf_elems.append(PageBreak())
     pdf_elems.append(Paragraph(title, styles[pdf_heading_style]))
+
+    # Point 10 : garde-fou smoke test. Si la config MCMC est réglée sur un run de
+    # test (draws effectifs < 1000), afficher un bandeau rouge pour qu'aucune
+    # version de test ne circule sans marquage explicite.
+    _SMOKE_DRAWS_MIN = 1000
+    _total_iter = int(MLM_MCMC_CONFIG.get("iter", 4000))
+    _warmup = int(MLM_MCMC_CONFIG.get("warmup", _total_iter // 2))
+    _effective_draws = max(1, _total_iter - max(1, min(_warmup, _total_iter - 1)))
+    if bayes and _effective_draws < _SMOKE_DRAWS_MIN:
+        smoke = (
+            f"🔴 SMOKE TEST — VALEURS NON INTERPRÉTABLES : la configuration MCMC ne produit que "
+            f"{_effective_draws} draws post-warmup (iter={_total_iter}, warmup={_warmup}), très en deçà "
+            f"du minimum de {_SMOKE_DRAWS_MIN} requis pour des estimations bayésiennes fiables. "
+            f"Cette section 3.1.5 est un test d'exécution du pipeline ; ne PAS interpréter les ICC, "
+            f"β contextuels, HDI ou diagnostics de convergence. Régler MLM_MCMC_CONFIG['iter'] ≥ 4000."
+        )
+        lines.append(f"**{smoke}**\n\n")
+        pdf_elems.append(Paragraph(smoke, styles["Heading4"]))
+        pdf_elems.append(Spacer(1, 0.08 * inch))
 
     intro = (
         "Les états émergents collectifs (TMS : COR, CRE, SPE ; cohésion : SOC, TSK, COM) sont mesurés au "
@@ -1750,18 +1790,67 @@ def render_mlm_icc_section(
         lines.append(f"**{icc_title}**\n\n")
         pdf_elems.append(Paragraph(icc_title, styles["Heading4"]))
 
+        # Point 9 : flag HDI fragile — le point estimate justifie l'agrégation
+        # (ICC ≥ 0.30) mais la borne basse du HDI frôle zéro (< 0.05) : l'agrégation
+        # est point-justifiée mais fragile (ex. CRE [0.012; 0.633]), à distinguer
+        # d'un cas robuste comme SPE dont le HDI est clairement > 0.
+        _HDI_FRAGILE_LOW = 0.05
+        _ICC_AGG_SEUIL = 0.30
+        _lo = pd.to_numeric(df_icc.get("ICC_hdi95_low"), errors="coerce")
+        _mean = pd.to_numeric(df_icc.get("ICC_bayes_mean"), errors="coerce")
+        df_icc = df_icc.copy()
+        df_icc["HDI_fragile"] = (_lo < _HDI_FRAGILE_LOW) & (_mean >= _ICC_AGG_SEUIL)
+
         icc_cols = [c for c in [
             "dimension", "K_groupes", "N_individus",
             "ICC_ANOVA", "ICC_bayes_mean", "ICC_bayes_sd",
-            "ICC_hdi95_low", "ICC_hdi95_high", "Rhat_null", "ESS_null",
+            "ICC_hdi95_low", "ICC_hdi95_high", "HDI_fragile",
+            "ICC_bayes_mean_HN", "prior_var_stable",
+            "Rhat_null", "ESS_null", "n_divergent",
         ] if c in df_icc.columns]
         icc_show = df_icc[icc_cols].copy()
-        for col in ["ICC_ANOVA", "ICC_bayes_mean", "ICC_bayes_sd", "ICC_hdi95_low", "ICC_hdi95_high", "Rhat_null"]:
+        for col in ["ICC_ANOVA", "ICC_bayes_mean", "ICC_bayes_sd", "ICC_hdi95_low", "ICC_hdi95_high", "ICC_bayes_mean_HN", "Rhat_null"]:
             if col in icc_show.columns:
                 icc_show[col] = pd.to_numeric(icc_show[col], errors="coerce").round(4)
 
         lines.append(md_table_highlight(icc_show, max_rows=10))
         pdf_elems.append(pdf_table_from_df(icc_show, max_rows=10))
+
+        # Diagnostic 1 (ICC) : divergences NUTS.
+        if "n_divergent" in df_icc.columns:
+            _divn = pd.to_numeric(df_icc["n_divergent"], errors="coerce")
+            _divn_total = int(_divn.fillna(0).sum())
+            if _divn_total == 0:
+                pdf_elems.append(Paragraph("✓ 0 transition divergente NUTS sur les modèles nuls ICC.", styles["Normal"]))
+                lines.append("*✓ 0 transition divergente NUTS sur les modèles nuls ICC.*\n\n")
+            else:
+                _dd = df_icc[_divn > 0]["dimension"].astype(str).tolist()
+                _wdd = f"⚠ {_divn_total} divergence(s) NUTS (modèles nuls) pour : {', '.join(_dd)}."
+                pdf_elems.append(Paragraph(_wdd, styles["Normal"]))
+                lines.append(f"*{_wdd}*\n\n")
+        # Diagnostic 2 : stabilité du verdict d'agrégation sous prior σ_u alternatif.
+        if "prior_var_stable" in df_icc.columns:
+            _unstable = df_icc[~df_icc["prior_var_stable"].astype(bool)]["dimension"].astype(str).tolist()
+            if _unstable:
+                _wpv = (f"⚠ Verdict d'agrégation (ICC≥0.30) SENSIBLE au prior de variance σ_u "
+                        f"(HalfCauchy vs HalfNormal) pour : {', '.join(_unstable)} — "
+                        "comparer colonnes ICC_bayes_mean vs ICC_bayes_mean_HN.")
+            else:
+                _wpv = ("✓ Verdict d'agrégation (ICC≥0.30) stable entre priors σ_u "
+                        "HalfCauchy(0,1) et HalfNormal(0,1) pour toutes les dimensions.")
+            pdf_elems.append(Paragraph(_wpv, styles["Normal"]))
+            lines.append(f"*{_wpv}*\n\n")
+
+        _fragile_dims = df_icc[df_icc["HDI_fragile"]]["dimension"].astype(str).tolist()
+        if _fragile_dims:
+            wf = (
+                f"⚠ HDI fragile (borne basse < {_HDI_FRAGILE_LOW}, point estimate ≥ {_ICC_AGG_SEUIL}) "
+                f"pour : {', '.join(_fragile_dims)}. L'agrégation au niveau groupe est justifiée au "
+                f"point estimate mais l'incertitude postérieure inclut des valeurs quasi nulles — "
+                f"à interpréter avec prudence, contrairement aux dimensions dont le HDI exclut clairement zéro."
+            )
+            lines.append(f"*{wf}*\n\n")
+            pdf_elems.append(Paragraph(wf, styles["Normal"]))
 
         if "Rhat_null" in df_icc.columns:
             bad_rhat = df_icc[pd.to_numeric(df_icc["Rhat_null"], errors="coerce") > rhat_thresh]["dimension"].tolist()
@@ -1793,11 +1882,14 @@ def render_mlm_icc_section(
             (_bayes_icc_path.parent).mkdir(parents=True, exist_ok=True)
             df_icc_save.to_csv(_bayes_icc_path, index=False, encoding="utf-8-sig")
 
-    # --- Table B : effets contextuels des 3 composites ---
+    # --- Table B : effets contextuels des prédicteurs L2 ---
     if not df_ctx.empty:
+        _n_pred_b = df_ctx["composite"].nunique() if "composite" in df_ctx.columns else 3
+        _n_dim_b = df_ctx["dimension"].nunique() if "dimension" in df_ctx.columns else 6
+        _n_models_b = len(df_ctx)
         ctx_title = (
-            "Table B — Effets contextuels des composites transactifs (18 modèles : "
-            "3 composites × 6 dimensions)"
+            f"Table B — Effets contextuels des prédicteurs L2 ({_n_models_b} modèles : "
+            f"{_n_pred_b} prédicteurs × {_n_dim_b} dimensions)"
         )
         lines.append(f"**{ctx_title}**\n\n")
         pdf_elems.append(Paragraph(ctx_title, styles["Heading4"]))
@@ -1805,7 +1897,7 @@ def render_mlm_icc_section(
         ctx_b_cols = [c for c in [
             "composite", "dimension",
             "beta_std", "beta_sd", "hdi95_low", "hdi95_high",
-            "robust_hdi", "Rhat", "ESS", "K_groupes",
+            "robust_hdi", "Rhat", "ESS", "n_divergent", "K_groupes",
         ] if c in df_ctx.columns]
         ctx_show = df_ctx[ctx_b_cols].copy()
         for col in ["beta_std", "beta_sd", "hdi95_low", "hdi95_high", "Rhat"]:
@@ -1832,6 +1924,20 @@ def render_mlm_icc_section(
                 w2 = f"⚠ ESS < {ess_thresh} pour : {', '.join(low)}."
                 lines.append(f"*{w2}*\n\n")
                 pdf_elems.append(Paragraph(w2, styles["Normal"]))
+        # Diagnostic 1 : divergences NUTS (attente = 0).
+        if "n_divergent" in df_ctx.columns:
+            _div = pd.to_numeric(df_ctx["n_divergent"], errors="coerce")
+            _div_total = int(_div.fillna(0).sum())
+            _div_models = df_ctx[_div > 0][["composite", "dimension"]].apply(
+                lambda r: f"{r['composite']} × {r['dimension']}", axis=1
+            ).tolist() if (_div > 0).any() else []
+            if _div_total == 0:
+                wdv = "✓ 0 transition divergente NUTS sur l'ensemble des modèles contextuels."
+            else:
+                wdv = (f"⚠ {_div_total} transition(s) divergente(s) pour : {', '.join(_div_models)} "
+                       "— estimations potentiellement biaisées (entonnoir de σ_u).")
+            lines.append(f"*{wdv}*\n\n")
+            pdf_elems.append(Paragraph(wdv, styles["Normal"]))
 
         ctx_note = (
             "beta_std = coefficient standardisé du composite L2 sur les perceptions individuelles, "
@@ -1911,9 +2017,12 @@ def _build_multilevel_synthesis_matrix(
       | Contextuel INV_TAS (β, IC95) | Contextuel INV_TMS (β, IC95)
       | Contextuel INV_TRS (β, IC95) | Convergence
     """
-    from sem.pls_sem_vr import INDIVIDUAL_DIMS
+    from sem.pls_sem_vr import INDIVIDUAL_DIMS, INCLUDE_AFFECT, AFFECT_MARKER
 
+    # Prédicteurs L2 affichés : 3 composites transactifs + branche affective standalone.
     composite_names = ["INV_TAS", "INV_TMS", "INV_TRS"]
+    if INCLUDE_AFFECT and not df_ctx.empty and "composite" in df_ctx.columns and (df_ctx["composite"] == AFFECT_MARKER).any():
+        composite_names = composite_names + [AFFECT_MARKER]
 
     def _ctx_str_for(dim: str, cname: str) -> tuple[str, bool | None]:
         if df_ctx.empty or "composite" not in df_ctx.columns:
@@ -1988,7 +2097,7 @@ def _build_multilevel_synthesis_matrix(
                 confound = f" [{flag}]"
         sd_str += confound
 
-        # --- Effets contextuels 3 composites ---
+        # --- Effets contextuels (3 composites + affect si présent) ---
         ctx_strings = {}
         ctx_robs = {}
         for cname in composite_names:
@@ -1996,28 +2105,35 @@ def _build_multilevel_synthesis_matrix(
             ctx_strings[cname] = s
             ctx_robs[cname] = r
 
-        # --- Convergence : ICC ≥ 0.30, SD robuste, ≥ 1 composite contextuel robuste ---
+        # --- Faisceau inter-strates : convergence des PREUVES entre strates
+        # (ICC ≥ 0.30, SD → perf robuste, ≥ 1 prédicteur contextuel L2 robuste).
+        # NB : « faisceau » ≠ convergence MCMC (cette dernière est signalée par ⚠).
         ctx_any_robust = any(v is True for v in ctx_robs.values())
         signals = [x for x in [icc_ok, sd_ok, ctx_any_robust] if x is not None]
         n_robust = sum(1 for x in signals if x)
-        if len(signals) == 0:
-            convergence = "données insuffisantes"
+        n_total = len(signals)
+        if n_total == 0:
+            faisceau = "données insuffisantes"
         elif n_robust >= 2:
-            convergence = "convergent"
+            faisceau = f"convergent ({n_robust}/{n_total})"
         elif n_robust == 1:
-            convergence = "partiel"
+            faisceau = f"partiel ({n_robust}/{n_total})"
         else:
-            convergence = "divergent"
+            faisceau = f"faible ({n_robust}/{n_total})"
 
-        rows.append({
+        row = {
             "Dimension": dim,
             "ICC (IC 95%)": icc_str,
             "SD → perf (β, IC 95%, ΔR²)": sd_str,
             "Contextuel INV_TAS (β, IC95)": ctx_strings["INV_TAS"],
             "Contextuel INV_TMS (β, IC95)": ctx_strings["INV_TMS"],
             "Contextuel INV_TRS (β, IC95)": ctx_strings["INV_TRS"],
-            "Convergence": convergence,
-        })
+        }
+        if AFFECT_MARKER in composite_names:
+            row["Contextuel Affect (β, IC95)"] = ctx_strings.get(AFFECT_MARKER, "n/d")
+        # Diagnostic 3 : colonne renommée pour éviter la collision avec « convergence MCMC ».
+        row["Faisceau inter-strates"] = faisceau
+        rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -2057,11 +2173,32 @@ def render_multilevel_synthesis_section(
         "Un effet SD robuste (IC excluant zéro) signale une hétérogénéité perceptuelle prédictive. "
         "Un effet contextuel robuste (✓ = robuste et prior_stable, ~ = robuste sans stabilité prior) "
         "signale une transmission groupe→individu de la dynamique comportementale correspondante. "
-        "La convergence compte les indicateurs robustes parmi {ICC ≥ 0.30, SD → perf robuste, "
-        "≥ 1 composite contextuel robuste} (≥ 2/3 = convergent)."
+        "La colonne « Faisceau inter-strates » compte les indicateurs robustes parmi {ICC ≥ 0.30, "
+        "SD → perf robuste, ≥ 1 prédicteur contextuel L2 robuste (composites INV OU branche affective)} "
+        "(≥ 2/3 = convergent). ATTENTION : « faisceau inter-strates » désigne la convergence des PREUVES "
+        "entre les trois strates (Spearman / path / MLM) et NON la convergence MCMC — cette dernière est "
+        "signalée séparément par ⚠ (Rhat, ESS, divergences NUTS)."
     )
     lines.append(synth + "\n\n")
     pdf_elems.append(Paragraph(synth, styles["Normal"]))
+    pdf_elems.append(Spacer(1, 0.08 * inch))
+
+    # Point 8 : note transversale « effet plafond » reliant les descriptifs 1.4,
+    # les flags CONFOUND de 3.1.4 et l'atténuation mécanique des corrélations.
+    ceiling_note = (
+        "Note transversale — effet plafond sur la cohésion. Les descriptifs (section 1.4) montrent "
+        "des scores de cohésion très élevés et resserrés vers le haut de l'échelle (TSK ≈ 8.19/9, "
+        "COM ≈ 8.14/9, médianes 8.33–8.5), soit une distribution tronquée près du maximum. "
+        "Cet effet plafond a deux conséquences à garder à l'esprit dans toutes les corrélations "
+        "impliquant TSK et COM : (1) il sous-tend les flags CONFOUND observés en 3.1.4 (la SD "
+        "intra-groupe devient dépendante du niveau moyen près du plafond, cf. Aguinis et al. 2013) ; "
+        "(2) il atténue mécaniquement les corrélations de Spearman (compression de variance et "
+        "saturation de rangs), de sorte que des ρ faibles sur TSK/COM peuvent refléter la troncature "
+        "de l'échelle plutôt qu'une absence d'association. Les associations sur ces deux dimensions "
+        "sont donc à lire comme des bornes inférieures conservatrices."
+    )
+    lines.append(ceiling_note + "\n\n")
+    pdf_elems.append(Paragraph(ceiling_note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.08 * inch))
 
     # Matrice de synthèse
@@ -2072,21 +2209,25 @@ def render_multilevel_synthesis_section(
 
     df_matrix = _build_multilevel_synthesis_matrix(df_icc_, df_ctx_, df_sd_paths_, df_sd_desc_)
 
-    mat_title = "Matrice de synthèse multiniveau par dimension (6 dimensions × 6 indicateurs)"
+    _n_ind_cols = max(0, len(df_matrix.columns) - 1) if not df_matrix.empty else 6  # hors colonne Dimension
+    _n_dims_mat = len(df_matrix) if not df_matrix.empty else 6
+    mat_title = f"Matrice de synthèse multiniveau par dimension ({_n_dims_mat} dimensions × {_n_ind_cols} indicateurs)"
     lines.append(f"**{mat_title}**\n\n")
     pdf_elems.append(Paragraph(mat_title, styles["Heading4"]))
     lines.append(md_table_highlight(df_matrix, max_rows=10))
     pdf_elems.append(pdf_table_from_df(df_matrix, max_rows=10))
     pdf_elems.append(Spacer(1, 0.08 * inch))
 
-    # Lecture automatique des convergences
-    if not df_matrix.empty and "Convergence" in df_matrix.columns:
-        conv_dims = df_matrix[df_matrix["Convergence"] == "convergent"]["Dimension"].tolist()
-        part_dims = df_matrix[df_matrix["Convergence"] == "partiel"]["Dimension"].tolist()
-        div_dims = df_matrix[df_matrix["Convergence"] == "divergent"]["Dimension"].tolist()
+    # Lecture automatique du faisceau inter-strates (diagnostic 3 : colonne renommée).
+    _faisceau_col = "Faisceau inter-strates" if "Faisceau inter-strates" in df_matrix.columns else "Convergence"
+    if not df_matrix.empty and _faisceau_col in df_matrix.columns:
+        _fcol = df_matrix[_faisceau_col].astype(str)
+        conv_dims = df_matrix[_fcol.str.startswith("convergent")]["Dimension"].tolist()
+        part_dims = df_matrix[_fcol.str.startswith("partiel")]["Dimension"].tolist()
+        div_dims = df_matrix[_fcol.str.startswith("faible")]["Dimension"].tolist()
         reading_parts = []
         if conv_dims:
-            reading_parts.append(f"Convergence multi-indicateurs (≥ 2/3 robustes) : {', '.join(conv_dims)}.")
+            reading_parts.append(f"Faisceau inter-strates convergent (≥ 2/3 robustes) : {', '.join(conv_dims)}.")
         if part_dims:
             reading_parts.append(f"Signal partiel (1/3 robuste) : {', '.join(part_dims)}.")
         if div_dims:
@@ -2514,7 +2655,18 @@ def supplemental_spearman_table(
     block: str,
     n_boot: int = SUPPLEMENTAL_BOOTSTRAP_B,
     sort_by_abs: bool = True,
+    apply_fdr: bool = False,
+    fdr_family: str = "by_y",
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    """Corrélations Spearman supplémentaires avec IC95 bootstrap et FDR optionnel.
+
+    apply_fdr : si True, correction Benjamini-Hochberg. Le regroupement en familles
+        est piloté par fdr_family :
+        - "by_y"   : une famille par variable dépendante (VD × bloc de modalité sensorielle audio/face/gaze, condition VR, schéma
+                     retenu à l'audit — familles restreintes aux features fournies).
+        - "table"  : une seule famille = toute la table.
+        La colonne p_fdr et le flag sig (basé sur p_fdr) sont alors ajoutés.
+    """
     rows: list[dict[str, Any]] = []
     for x in dict.fromkeys(x_cols):
         if x not in df.columns:
@@ -2544,20 +2696,54 @@ def supplemental_spearman_table(
             })
 
     if not rows:
-        return pd.DataFrame(columns=["x", "y", "rho", "p", "n", "sig"]), []
+        empty_cols = ["x", "y", "rho", "p", "n", "sig", "IC95"]
+        if apply_fdr:
+            empty_cols.insert(4, "p_fdr")
+        return pd.DataFrame(columns=empty_cols), []
 
     out = pd.DataFrame(rows)
+
+    # --- FDR Benjamini-Hochberg par famille (VD × bloc sensoriel, condition VR = par y) ---
+    if apply_fdr:
+        out["p_fdr"] = np.nan
+        group_key = "y" if fdr_family == "by_y" else None
+        if group_key is not None:
+            for _yv, grp in out.groupby(group_key):
+                out.loc[grp.index, "p_fdr"] = bh_fdr(grp["p"].values)
+        else:
+            out["p_fdr"] = bh_fdr(out["p"].values)
+        # sig recalculé sur p_fdr (respecte le n minimal via _supplemental_sig_stars)
+        out["sig"] = [
+            _supplemental_sig_stars(float(pf), int(nn)) if np.isfinite(pf) else ""
+            for pf, nn in zip(out["p_fdr"], out["n"])
+        ]
+
     out["abs_rho"] = out["rho"].abs()
+    sort_p = "p_fdr" if apply_fdr else "p"
     if sort_by_abs:
-        out = out.sort_values(["abs_rho", "p"], ascending=[False, True])
+        out = out.sort_values(["abs_rho", sort_p], ascending=[False, True])
     else:
-        out = out.sort_values(["p", "abs_rho"], ascending=[True, False])
+        out = out.sort_values([sort_p, "abs_rho"], ascending=[True, False])
     out = out.reset_index(drop=True)
 
     full_rows = out.drop(columns=["abs_rho"], errors="ignore").to_dict("records")
-    display = out[["x", "y", "rho", "p", "n", "sig"]].copy()
+
+    # Colonne IC95 lisible (bootstrap percentile) — répond à la note de bloc.
+    def _fmt_ci(lo, hi):
+        if pd.notna(lo) and pd.notna(hi):
+            return f"[{float(lo):.2f}; {float(hi):.2f}]"
+        return ""
+    out["IC95"] = [_fmt_ci(lo, hi) for lo, hi in zip(out["ci95_low"], out["ci95_high"])]
+
+    disp_cols = ["x", "y", "rho", "p"]
+    if apply_fdr:
+        disp_cols.append("p_fdr")
+    disp_cols += ["n", "IC95", "sig"]
+    display = out[disp_cols].copy()
     display["rho"] = display["rho"].round(2)
     display["p"] = display["p"].round(4)
+    if apply_fdr:
+        display["p_fdr"] = display["p_fdr"].round(4)
     return display, full_rows
 
 
@@ -2565,15 +2751,117 @@ def _format_corr_item(row: pd.Series) -> str:
     return f"{row['x']} ↔ {row['y']} (ρ={float(row['rho']):.2f}, p={float(row['p']):.3g})"
 
 
-def _supplemental_corr_note(table: pd.DataFrame, *, context: str, n8_warning: bool = False) -> str:
+def _dedup_equivalent_features(cols: list[str], df: pd.DataFrame, r_threshold: float = 0.999) -> list[str]:
+    """Déduplique les features numériquement identiques (mêmes valeurs → même ρ).
+
+    Point 7 : certaines features apparaissent sous deux noms (ex. gaze_convergence_ratio
+    et gaze_shared_visual_attention_ratio, alias directionnel/legacy) et produisent des
+    corrélations identiques qui polluent le classement des top corrélations. On conserve
+    la PREMIÈRE occurrence de chaque groupe de colonnes corrélées à |r| >= r_threshold.
+    """
+    seen: list[str] = []
+    kept: list[str] = []
+    for c in dict.fromkeys(cols):
+        if c not in df.columns:
+            continue
+        s = pd.to_numeric(df[c], errors="coerce")
+        is_dup = False
+        for k in kept:
+            pair = pd.concat([s, pd.to_numeric(df[k], errors="coerce")], axis=1).dropna()
+            if len(pair) >= 3 and pair.iloc[:, 0].nunique() > 1 and pair.iloc[:, 1].nunique() > 1:
+                r = pair.iloc[:, 0].corr(pair.iloc[:, 1])
+                if pd.notna(r) and abs(r) >= r_threshold:
+                    is_dup = True
+                    break
+        if not is_dup:
+            kept.append(c)
+        seen.append(c)
+    return kept
+
+
+# Groupes de variantes monotones d'une même VD Riedl : mêmes rangs par
+# construction (somme vs normalisation), donc ρ de Spearman identiques. On ne
+# garde qu'un représentant par groupe dans les tables de synthèse (C4b).
+_MONOTONE_VD_GROUPS: list[tuple[str, ...]] = [
+    ("effort_task_norm", "effort_task_sum"),
+    ("strategy_norm", "strategy_ratio_mean"),
+    ("skill_mean", "skill_max", "skill_congruence_mean"),
+]
+
+
+# Features équivalentes (alias directionnel/legacy) : mêmes valeurs → mêmes ρ.
+# On ne garde que la forme canonique dans les tables de synthèse (C4a).
+_EQUIVALENT_FEATURE_CANON: dict[str, str] = {
+    "gaze_shared_visual_attention_ratio": "gaze_convergence_ratio",
+    "gaze_shared_obj_ratio": "gaze_convergence_ratio",
+    "gaze_entropy_mean_participants": "gaze_entropy_dir_mean",
+}
+
+
+def _finalize_top_corr_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Prépare une table top-corrélations pour l'affichage (C3 + C4).
+
+    - C3 : convertit le booléen `artefact_suspect` en marqueur lisible dans une
+      colonne `flag` (« ⚠art »), puis retire la colonne interne.
+    - C4a : déduplique les features X équivalentes (alias directionnel/legacy,
+      ex. gaze_shared_visual_attention_ratio ≡ gaze_convergence_ratio) — d'abord
+      par mapping canonique connu, puis par signature numérique (ρ,p,n identiques
+      pour un même y) pour attraper les alias non listés.
+    - C4b : déduplique les variantes monotones d'une même VD Riedl (mêmes ρ).
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+
+    if "y" in out.columns and "x" in out.columns:
+        # C4a — remplacer les X équivalents par leur forme canonique, puis
+        # dédoublonner (x_canon, y). On affiche le nom canonique (pas l'alias legacy).
+        out["x"] = out["x"].map(lambda v: _EQUIVALENT_FEATURE_CANON.get(str(v), str(v)))
+        out["_xc"] = out["x"]
+        out = out.drop_duplicates(subset=["_xc", "y"], keep="first")
+        # C4a bis — dédoublonnage par signature numérique (rho,p,n) pour un même y :
+        # attrape les alias non listés (deux X différents mais valeurs identiques).
+        if {"rho", "p", "n"}.issubset(out.columns):
+            out["_sig"] = list(zip(
+                out["y"].astype(str),
+                out["rho"].round(2).astype(str),
+                pd.to_numeric(out["p"], errors="coerce").round(3).astype(str),
+                out["n"].astype(str),
+            ))
+            out = out.drop_duplicates(subset=["_sig"], keep="first").drop(columns=["_sig"])
+        out = out.drop(columns=["_xc"])
+
+        # C4b — dédoublonnage des VD monotones (par x, on ne garde qu'une variante).
+        canon = {}
+        for grp in _MONOTONE_VD_GROUPS:
+            for v in grp:
+                canon[v] = grp[0]
+        out["_yc"] = out["y"].map(lambda v: canon.get(str(v), str(v)))
+        out = out.drop_duplicates(subset=["x", "_yc"], keep="first").drop(columns=["_yc"])
+
+    # C3 — marqueur artefact lisible.
+    if "artefact_suspect" in out.columns:
+        out["flag"] = out["artefact_suspect"].map(lambda b: "⚠art" if bool(b) else "")
+        out = out.drop(columns=["artefact_suspect"])
+    return out.reset_index(drop=True)
+
+
+def _supplemental_corr_note(
+    table: pd.DataFrame,
+    *,
+    context: str,
+    n8_warning: bool = False,
+    fdr_applied: bool = False,
+) -> str:
     if table is None or table.empty:
         return f"Aucune paire estimable pour {context}."
 
     sig = table[table["sig"].astype(str).str.strip() != ""].copy()
     moderate = table[(table["rho"].abs() >= 0.30) & (table["sig"].astype(str).str.strip() == "")].copy()
+    _sig_basis = "après correction FDR" if fdr_applied else "non corrigées"
     if not sig.empty:
         first_sentence = (
-            "Associations significatives : "
+            f"Associations significatives ({_sig_basis}) : "
             + "; ".join(_format_corr_item(row) for _, row in sig.head(3).iterrows())
             + "."
         )
@@ -2586,11 +2874,33 @@ def _supplemental_corr_note(table: pd.DataFrame, *, context: str, n8_warning: bo
     else:
         first_sentence = "Aucune association significative ni tendance au moins modérée (|ρ|≥0.30)."
 
-    if n8_warning:
-        caution = "Les paires impliquant Riedl/TCI restent exploratoires (n=8) et les IC95 bootstrap percentile B=5000 sont larges."
+    if fdr_applied:
+        # R3 (revue) : certaines familles incluent des variantes redondantes
+        # documentées (ex. face_negative_affect_extended_ratio, protégée du
+        # pruning corrélationnel car complémentaire de face_negative_affect_ratio ;
+        # cf. PRUNING_PROTECTED_PAIRS) — la correction FDR par famille est donc
+        # légèrement conservatrice (m de famille parfois +1) plutôt que biaisée.
+        fdr_sentence = (
+            " Correction Benjamini-Hochberg (FDR) appliquée par famille = variable "
+            "dépendante (VD) × bloc de modalité sensorielle (audio / face / gaze), "
+            "condition VR ; ces familles incluent les variantes redondantes "
+            "documentées (protégées du pruning corrélationnel, cf. config INV), d'où une "
+            "correction conservatrice ; la significativité (sig) est jugée sur p_fdr."
+        )
     else:
-        caution = "Ces estimations restent exploratoires avec n faible ; les IC95 bootstrap percentile B=5000 sont à lire comme un diagnostic d'instabilité."
-    return f"{first_sentence} {caution}"
+        fdr_sentence = ""
+
+    if n8_warning:
+        # Point 6 : bandeau standardisé — ces blocs (Riedl/TCI, n≈7-8) sont
+        # DESCRIPTIFS : pas de correction FDR ni de conclusion inférentielle.
+        banner = (
+            "⚠ BLOC DESCRIPTIF (n≈7-8) — aucune inférence : pas de FDR, "
+            "les étoiles de significativité ne doivent pas être interprétées comme des tests. "
+        )
+        caution = "Les paires impliquant Riedl/TCI restent exploratoires (n≈8) et les IC95 bootstrap percentile B=5000 sont larges."
+        return f"{banner}{first_sentence} {caution}"
+    caution = "Ces estimations restent exploratoires avec n faible ; les IC95 bootstrap percentile B=5000 (colonne IC95) sont à lire comme un diagnostic d'instabilité."
+    return f"{first_sentence}{fdr_sentence} {caution}"
 
 
 def _append_supplemental_corr_block(
@@ -2773,7 +3083,11 @@ def render_inv_section(
             if pd.api.types.is_numeric_dtype(inv_df[c]) and c not in ID_LIKE_COLS
         ][:MAX_X_COLS]
 
-    if inv_pruned_features is not None and inv_label in ("High-level", "Face"):
+    # M1 (audit) : restreindre les blocs inférentiels x.1–x.4 aux features de
+    # l'espace gelé (kept=1) pour TOUTES les modalités (Speech, Gaze, Face, High-level),
+    # et non plus seulement Face/High-level. Évite que des features prunées
+    # (extended_ratio, turn_balance_cv, total_speaking_turns…) gonflent les familles FDR.
+    if inv_pruned_features is not None:
         icols_filtered = [c for c in icols if c in inv_pruned_features]
         if icols_filtered:
             n_dropped = len(icols) - len(icols_filtered)
@@ -2900,6 +3214,7 @@ def render_inv_section(
             apply_fdr=apply_fdr,
             all_corr_results=all_corr_results,
             top_k_plots=3,
+            descriptive_banner=True,  # M4 : Riedl n≈7-8
         )
 
     if tci_cols:
@@ -2915,6 +3230,7 @@ def render_inv_section(
             apply_fdr=apply_fdr,
             all_corr_results=all_corr_results,
             top_k_plots=3,
+            descriptive_banner=True,  # M4 : TCI n≈7-8
         )
 
     inv_perf_y = [c for c in ["Score_perf_tsk"] if c in merged.columns and merged[c].dropna().any()]
@@ -2949,18 +3265,23 @@ def render_inv_section(
         )
 
     if cohesion_subdim_cols and inv_label != "High-level":
-        retained_by_label = {
-            "Speech": REGRESSION_RETAINED_INV_FEATURES.get("speech", []),
-            "Face": REGRESSION_RETAINED_INV_FEATURES.get("face", []),
-            "Gaze": REGRESSION_RETAINED_INV_FEATURES.get("gaze", []),
-        }
-        retained_all = (
-            REGRESSION_RETAINED_INV_FEATURES.get("speech", [])
-            + REGRESSION_RETAINED_INV_FEATURES.get("face", [])
-            + REGRESSION_RETAINED_INV_FEATURES.get("gaze", [])
-        )
-        cohesion_x = retained_by_label.get(inv_label, retained_all if inv_label == "High-level" else icols)
-        cohesion_x = [c for c in dict.fromkeys(cohesion_x) if c in merged.columns and pd.to_numeric(merged[c], errors="coerce").notna().any()]
+        # Point 3 : le bloc inférentiel n'utilise QUE les features retenues par le
+        # pruning (kept=1), dédupliquées. Les features prunées (audio_total_speaking_turns,
+        # audio_turn_balance_cv, face_negative_affect_extended_ratio…) sont écartées ici
+        # pour ne pas gonfler les familles FDR ; elles restent visibles en annexe descriptive.
+        if inv_pruned_features:
+            _pool = [c for c in dict.fromkeys(inv_pruned_features) if infer_family_from_name(c) in _COHESION_FAMILY_MAP.get(inv_label, ())]
+        else:
+            retained_by_label = {
+                "Speech": REGRESSION_RETAINED_INV_FEATURES.get("speech", []),
+                "Face": REGRESSION_RETAINED_INV_FEATURES.get("face", []),
+                "Gaze": REGRESSION_RETAINED_INV_FEATURES.get("gaze", []),
+            }
+            _pool = retained_by_label.get(inv_label, icols)
+        cohesion_x = [
+            c for c in dict.fromkeys(_pool)
+            if c in merged.columns and pd.to_numeric(merged[c], errors="coerce").notna().any()
+        ]
         if cohesion_x:
             cohesion_table, cohesion_rows = supplemental_spearman_table(
                 merged,
@@ -2968,6 +3289,8 @@ def render_inv_section(
                 cohesion_subdim_cols,
                 block=f"{inv_label} ↔ sous-dimensions Cohésion",
                 sort_by_abs=True,
+                apply_fdr=apply_fdr,
+                fdr_family="by_y",
             )
             if not cohesion_table.empty:
                 all_corr_results.extend(cohesion_rows)
@@ -2975,6 +3298,7 @@ def render_inv_section(
                     cohesion_table,
                     context=f"{inv_label} ↔ sous-dimensions Cohésion",
                     n8_warning=False,
+                    fdr_applied=apply_fdr,
                 )
                 _append_supplemental_corr_block(
                     lines,
@@ -3037,7 +3361,9 @@ def collect_inv_corr_results(
             if pd.api.types.is_numeric_dtype(inv_df[c]) and c not in ID_LIKE_COLS
         ][:MAX_X_COLS]
 
-    if inv_pruned_features is not None and inv_label in ("High-level", "Face"):
+    # M1 (audit) : filtre pruning universel (toutes modalités) pour la collecte
+    # des corrélations INV (alimente 3.1.9 et les blocs x.1–x.4).
+    if inv_pruned_features is not None:
         icols_filtered = [c for c in icols if c in inv_pruned_features]
         if icols_filtered:
             icols = icols_filtered
@@ -3060,6 +3386,14 @@ def collect_inv_corr_results(
     if q_group is not None and not q_group.empty:
         merged = merge_on_unit(merged, q_group, how="left")
 
+    # M2 (audit) : inclure les sous-dimensions de cohésion (SOC/TSK/COM) dans la
+    # collecte, sinon les seules associations FDR-significatives légitimes
+    # (negative_affect → COM/SOC/TSK, p_fdr 0.011–0.042) n'entrent jamais dans le
+    # pool de la synthèse 3.1.9.
+    _cohesion_subdims_collect = [
+        c for c in COHESION_SUBDIM_COLS
+        if c in merged.columns and pd.to_numeric(merged[c], errors="coerce").notna().any()
+    ]
     results: list[dict[str, Any]] = []
     corr_specs = [
         ("Riedl", rcols),
@@ -3067,18 +3401,52 @@ def collect_inv_corr_results(
         ("Performance", [c for c in ["Score_perf_tsk"] if c in merged.columns and merged[c].dropna().any()]),
         ("Questionnaire", q_questionnaire_cols[:MAX_Y_COLS]),
     ]
+    # R1 (revue) : Riedl/TCI sont des blocs descriptifs (n≈7-8) — pas de FDR ni
+    # d'étoiles (cf. bandeau ⚠ affiché en 3.x.1/3.x.2). Sans ce garde-fou, ces
+    # paires ressortaient avec un p_fdr trompeur (ex. gaze_convergence_ratio→
+    # skill_max, p_fdr=0.014) et dominaient indûment le classement 3.1.9.
     for target_label, y_cols in corr_specs:
         if not y_cols:
             continue
+        is_descriptive = target_label in ("Riedl", "TCI")
         _, rows_all = spearman_table(
             merged,
             x_cols=icols,
             y_cols=y_cols,
-            apply_fdr=apply_fdr,
+            apply_fdr=apply_fdr and not is_descriptive,
             block=f"{inv_label} ↔ {target_label}",
-            n_min_sig=N_MIN_SIG,
+            n_min_sig=N_MIN_SIG if not is_descriptive else 10**9,
         )
+        for rec in rows_all:
+            rec["descriptive_only"] = is_descriptive
         results.extend(rows_all)
+
+    # C1 (revue) — cohérence STRICTE 3.1.9 ↔ bloc x.5 Cohésion : on reproduit
+    # EXACTEMENT l'appel du bloc 3.x.5 (même fonction supplemental_spearman_table,
+    # même espace de features `_pool` restreint à la modalité et prunées, même
+    # famille by_y). La synthèse 3.1.9 hérite ainsi de p_fdr IDENTIQUES à ceux
+    # affichés en 3.2.5/3.3.5/3.4.5 (fini le 0.019 en synthèse vs 0.011* en bloc).
+    if _cohesion_subdims_collect:
+        if inv_pruned_features:
+            _pool_c = [c for c in dict.fromkeys(inv_pruned_features)
+                       if infer_family_from_name(c) in _COHESION_FAMILY_MAP.get(inv_label, ())]
+        else:
+            _pool_c = list(icols)
+        _cohesion_x = [c for c in dict.fromkeys(_pool_c)
+                       if c in merged.columns and pd.to_numeric(merged[c], errors="coerce").notna().any()]
+        if _cohesion_x:
+            _, _coh_rows = supplemental_spearman_table(
+                merged,
+                _cohesion_x,
+                _cohesion_subdims_collect,
+                block=f"{inv_label} ↔ sous-dimensions Cohésion",
+                sort_by_abs=True,
+                apply_fdr=apply_fdr,
+                fdr_family="by_y",
+            )
+            for rec in _coh_rows:
+                rec["descriptive_only"] = False
+            results.extend(_coh_rows)
     return results
 
 
@@ -3128,21 +3496,30 @@ def build_inv_stepwise_dataset(
     else:
         logging.info("[INV stepwise] inv_pruned_features.csv absent - fallback whitelist")
 
-    # Candidats pour _supplement : toutes les features prunées (ou whitelist si demandé)
-    face_candidates = list(REGRESSION_RETAINED_INV_FEATURES["face"]) if use_regression_whitelist else [
-        f for f in pruned_kept if infer_family_from_name(f) in ("face", "affect")
-    ] or list(REGRESSION_RETAINED_INV_FEATURES["face"])
-    gaze_candidates = list(REGRESSION_RETAINED_INV_FEATURES["gaze"]) if use_regression_whitelist else [
-        f for f in pruned_kept if infer_family_from_name(f) == "gaze"
-    ] or list(REGRESSION_RETAINED_INV_FEATURES["gaze"])
+    # Candidats = toutes les features prunées kept=1 (le pruning est le seul filtre de sélection).
+    # regression_preferred n'est plus utilisé comme filtre — seulement comme ordre de préférence.
+    # Fallback sur whitelist métier uniquement si pruned_features absent.
+    _pruned_face = [f for f in pruned_kept if infer_family_from_name(f) in ("face", "affect")]
+    _pruned_gaze = [f for f in pruned_kept if infer_family_from_name(f) == "gaze"]
+    _pruned_audio = [f for f in pruned_kept if infer_family_from_name(f) == "audio"]
 
+    face_candidates = (list(REGRESSION_RETAINED_INV_FEATURES["face"]) if use_regression_whitelist
+                       else _pruned_face or list(REGRESSION_RETAINED_INV_FEATURES["face"]))
+    gaze_candidates = (list(REGRESSION_RETAINED_INV_FEATURES["gaze"]) if use_regression_whitelist
+                       else _pruned_gaze or list(REGRESSION_RETAINED_INV_FEATURES["gaze"]))
+    audio_candidates = (list(REGRESSION_RETAINED_INV_FEATURES["speech"]) if use_regression_whitelist
+                        else _pruned_audio or list(REGRESSION_RETAINED_INV_FEATURES["speech"]))
+
+    # Enrichissement depuis HL (variables absentes du CSV source mais présentes dans high_level_features.csv)
+    # + enrichissement audio depuis HL (audio_total_speaking_turns, etc.)
     inv_face_aug = _supplement_inv_block_with_high_level(inv_face, hl, face_candidates)
     inv_gaze_aug = _supplement_inv_block_with_high_level(inv_gaze_all, hl, gaze_candidates)
+    inv_speech_aug = _supplement_inv_block_with_high_level(inv_speech, hl, audio_candidates)
 
     source_specs = [
-        ("Audio/Speech", inv_speech, REGRESSION_RETAINED_INV_FEATURES["speech"]),
-        ("Face", inv_face_aug, REGRESSION_RETAINED_INV_FEATURES["face"]),
-        ("Gaze", inv_gaze_aug, REGRESSION_RETAINED_INV_FEATURES["gaze"]),
+        ("Audio/Speech", inv_speech_aug, audio_candidates),
+        ("Face", inv_face_aug, face_candidates),
+        ("Gaze", inv_gaze_aug, gaze_candidates),
     ]
 
     for label, df, preferred_cols in source_specs:
@@ -3389,7 +3766,7 @@ def _ensure_regression_pca_outputs(
         apply_pruning=(inv_analysis_mode == "pruning"),
         max_missing=0.20,
         min_cumvar=0.70,
-        prune_threshold=0.80,
+        prune_threshold=REDUNDANCY_CORR_THRESHOLD,  # source unique de vérité (inv_features_config.py)
         rotation=str(pca_rotation).lower().strip(),
     )
     return inv_subdir
@@ -3890,7 +4267,7 @@ def build_principal_sections_2_4_report(
     pdf_elems.append(Paragraph(section4_note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.1 * inch))
 
-    top_df = top_corr_df(all_corr_results, top_n=50, min_abs_rho=0.55, max_p=0.2)
+    top_df = _finalize_top_corr_display(top_corr_df(all_corr_results, top_n=50, min_abs_rho=0.55, max_p=0.2))
     lines.append("Corrélations les plus fortes retenues (`|rho| >= 0.55`, `p < 0.20`) :\n\n")
     pdf_elems.append(Paragraph("Corrélations les plus fortes retenues (|rho| >= 0.55, p < 0.20) :", styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.05 * inch))
@@ -3912,13 +4289,13 @@ def build_principal_sections_2_4_report(
     pdf_elems.append(Paragraph(supp_note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.1 * inch))
 
-    supp_df = top_corr_df(
+    supp_df = _finalize_top_corr_display(top_corr_df(
         all_corr_results,
         top_n=50,
         min_abs_rho=0.4,
         max_abs_rho=0.55,
         max_p=0.2,
-    )
+    ))
     if supp_df.empty:
         lines.append("_(aucune corrélation avec p < 0.20 pour `0.40 <= |rho| < 0.55`)_\n\n")
         pdf_elems.append(Paragraph(
@@ -4173,10 +4550,31 @@ def build_report(
     print(f"[INFO] Mode d'analyse INV : {inv_analysis_mode}")
     print(f"[INFO] Chargement depuis : {results_dir / inv_subdir}")
 
-    # Features INV non-redondantes (hard pruning |r| > 0.80).
+    # Features INV non-redondantes (hard pruning |r| > REDUNDANCY_CORR_THRESHOLD).
     # En mode pruning, on charge la liste des features prunées.
     # En mode no-pruning, on utilise toutes les features (inv_pruned_features = None).
-    inv_pruned_features = load_inv_pruned_features(results_dir, inv_subdir=inv_subdir) if apply_pruning else None
+    #
+    # Point 1 (audit) : ESPACE DE FEATURES GELÉ. Toutes les strates VR (stepwise,
+    # Spearman-FDR, composites SEM, MLM, PCA régression) partagent la même source de
+    # vérité : get_frozen_inv_feature_space() (dérivé du CSV de pruning au chargement).
+    if apply_pruning:
+        inv_pruned_features = get_frozen_inv_feature_space(results_dir, inv_subdir=inv_subdir)
+        if not inv_pruned_features:
+            # Fallback explicite si le CSV est absent (ne pas fabriquer un espace ad hoc).
+            inv_pruned_features = load_inv_pruned_features(results_dir, inv_subdir=inv_subdir)
+        # Garde-fou : les composites SEM doivent être un sous-ensemble de l'espace gelé.
+        if inv_pruned_features:
+            try:
+                from sem.pls_sem_vr import REFINED_INV_COMPOSITES as _SEM_COMPOSITES
+                _sem_feats = {f for feats in _SEM_COMPOSITES.values() for f in feats}
+                _off_space = sorted(_sem_feats - set(inv_pruned_features))
+                if _off_space:
+                    print(f"[WARN] Espace gelé : composites SEM hors espace de pruning : {_off_space}. "
+                          "Réaligner REFINED_INV_COMPOSITES ou le pruning.")
+            except Exception:
+                pass
+    else:
+        inv_pruned_features = None
     # Charger la liste complète des prunées pour l'info dans le rapport, même si pruning désactivé
     _all_pruned_info = load_inv_pruned_features_full(results_dir, inv_subdir=inv_subdir)
     inv_pruned_features_base = inv_pruned_features
@@ -4718,7 +5116,7 @@ def build_report(
                 pdf_heading_style="Heading4",
                 add_page_break=True,
             )
-            _step("§3.1.5 MLM bayésien ICC + 18 modèles contextuels (MCMC — lent)")
+            _step("§3.1.5 MLM bayésien ICC + modèles contextuels (18/24 selon affect, MCMC — lent)")
             _icc_317, _ctx_317 = render_mlm_icc_section(
                 lines=lines,
                 pdf_elems=pdf_elems,
@@ -4825,41 +5223,101 @@ def build_report(
                 sort_by_abs=True,
             )
             inv_top_corr_results.extend(cohesion_rows)
+
+        # R1 (revue) : les blocs descriptifs (Riedl/TCI, n≈7-8, sans FDR interprétable)
+        # ne doivent pas concourir dans le classement principal — sinon ils écrasent
+        # les associations réellement inférentielles (ex. gaze_convergence_ratio→
+        # skill_max, n=8, remontait en tête via un p_fdr de famille à 2 tests).
+        # On les isole dans une sous-table non triée par p_fdr, sans étoiles.
+        _inferential_pool = [r for r in inv_top_corr_results if not r.get("descriptive_only")]
+        _descriptive_pool = [r for r in inv_top_corr_results if r.get("descriptive_only")]
+
+        # R2 (revue) : dédoublonnage (x, y) — le bloc High-level répète des paires
+        # déjà couvertes par leur modalité d'origine (ex. gaze_convergence_ratio et
+        # son alias gaze_shared_visual_attention_ratio → skill_max, p_fdr différent
+        # selon la famille de rattachement). Famille canonique = bloc de modalité
+        # d'origine (Face/Speech/Gaze) ; High-level est exclu du classement 3.1.9.
+        _non_hl = [r for r in _inferential_pool if not str(r.get("block", "")).startswith("High-level")]
+        _hl_only = [r for r in _inferential_pool if str(r.get("block", "")).startswith("High-level")]
+        _seen_pairs = {(r.get("x"), r.get("y")) for r in _non_hl}
+        _hl_unique = [r for r in _hl_only if (r.get("x"), r.get("y")) not in _seen_pairs]
+        _inferential_pool = _non_hl + _hl_unique
+
         top_inv_df = top_corr_df(
-            inv_top_corr_results,
+            _inferential_pool,
             top_n=20,
             min_abs_rho=0.50,
             max_p=0.2,
         )
         if top_inv_df.empty:
             top_inv_df = top_corr_df(
-                inv_top_corr_results,
+                _inferential_pool,
                 top_n=20,
                 min_abs_rho=0.40,
                 max_p=0.2,
             )
         if not top_inv_df.empty and {"x", "y"}.issubset(top_inv_df.columns):
             top_inv_df = top_inv_df.drop_duplicates(subset=["x", "y"], keep="first").reset_index(drop=True)
+        top_inv_df = _finalize_top_corr_display(top_inv_df)  # C3 (⚠art) + C4b (VD monotones)
         if not top_inv_df.empty:
             lines.append(f"#### 3.1.9 Top corrélations INV\n\n")
             lines.append(
                 "Les associations ci-dessous résument les corrélations les plus fortes observées "
-                "sur les blocs Face, Speech, Gaze et High-level avant le détail bloc par bloc. "
-                "Le classement privilégie d'abord la significativité, puis la taille d'effet absolue.\n\n"
+                "sur les blocs Face, Speech et Gaze (High-level dédoublonné, blocs descriptifs "
+                "Riedl/TCI exclus — voir sous-table dédiée) avant le détail bloc par bloc. "
+                "Le classement privilégie d'abord la significativité (p_fdr), puis la taille d'effet absolue.\n\n"
             )
             lines.append(md_table_highlight(top_inv_df, max_rows=20) + "\n")
             pdf_elems.append(Paragraph("3.1.9 Top corrélations INV", styles["Heading4"]))
             pdf_elems.append(
                 Paragraph(
                     "Les associations ci-dessous résument les corrélations les plus fortes observées "
-                    "sur les blocs Face, Speech, Gaze et High-level avant le détail bloc par bloc. "
-                    "Le classement privilégie d'abord la significativité, puis la taille d'effet absolue.",
+                    "sur les blocs Face, Speech et Gaze (High-level dédoublonné, blocs descriptifs "
+                    "Riedl/TCI exclus — voir sous-table dédiée) avant le détail bloc par bloc. "
+                    "Le classement privilégie d'abord la significativité (p_fdr), puis la taille d'effet absolue.",
                     styles["Normal"],
                 )
             )
             pdf_elems.append(Spacer(1, 0.06 * inch))
             pdf_elems.append(pdf_table_from_df(top_inv_df, max_rows=20))
             pdf_elems.append(Spacer(1, 0.1 * inch))
+
+        if _descriptive_pool:
+            _desc_df = pd.DataFrame(_descriptive_pool)
+            _desc_df["abs_rho"] = _desc_df["rho"].abs()
+            _desc_df = _desc_df[_desc_df["abs_rho"] >= 0.50]
+            # C3 + C4 (revue) : marquer les artefacts (⚠art) et dédoublonner les
+            # variantes monotones de VD (effort_task_sum/_norm, strategy_ratio_mean/_norm)
+            # AVANT le classement de la sous-table descriptive.
+            _desc_df = _finalize_top_corr_display(_desc_df)
+            # Ordre par |rho| indicatif (pas de FDR ici) ; l'artefact ρ≈−0.99 est
+            # relégué en fin via _finalize (flag) puis via le tri artefact ci-dessous.
+            _desc_df["abs_rho"] = _desc_df["rho"].abs()
+            _desc_df["_is_art"] = _desc_df.get("flag", "").astype(str).str.contains("art")
+            _desc_df = _desc_df.sort_values(["_is_art", "abs_rho"], ascending=[True, False]).head(15)
+            _desc_cols = [c for c in ["block", "x", "y", "rho", "p", "n", "flag"] if c in _desc_df.columns]
+            _desc_display = _desc_df[_desc_cols].reset_index(drop=True)
+            if not _desc_display.empty:
+                _desc_title = "3.1.9bis Associations descriptives (Riedl/TCI, n≈7-8 — hors classement)"
+                lines.append(f"#### {_desc_title}\n\n")
+                lines.append(
+                    "_⚠ BLOC DESCRIPTIF (n≈7-8) — aucune inférence : pas de FDR interprétable, "
+                    "aucune étoile de significativité. Associations les plus fortes en |ρ| parmi "
+                    "Riedl/TCI, listées à titre exploratoire uniquement, hors classement 3.1.9._\n\n"
+                )
+                lines.append(md_table_highlight(_desc_display, max_rows=15) + "\n")
+                pdf_elems.append(Paragraph(_desc_title, styles["Heading4"]))
+                pdf_elems.append(
+                    Paragraph(
+                        "⚠ BLOC DESCRIPTIF (n≈7-8) — aucune inférence : pas de FDR interprétable, "
+                        "aucune étoile de significativité. Associations les plus fortes en |ρ| parmi "
+                        "Riedl/TCI, listées à titre exploratoire uniquement, hors classement 3.1.9.",
+                        styles["Normal"],
+                    )
+                )
+                pdf_elems.append(Spacer(1, 0.06 * inch))
+                pdf_elems.append(pdf_table_from_df(_desc_display, max_rows=15))
+                pdf_elems.append(Spacer(1, 0.1 * inch))
         pdf_elems.append(PageBreak())
 
         _step("§3.2 corrélations INV Face")
@@ -4898,22 +5356,28 @@ def build_report(
             all_corr_results=all_corr_results,
         )
         if retained_inv_cols and q_cohesion_subdims:
+            # Point 7 : dédupliquer les features identiques sous deux noms avant la
+            # synthèse (ex. gaze_convergence_ratio ≡ gaze_shared_visual_attention_ratio).
+            _dedup_retained = _dedup_equivalent_features(retained_inv_cols, inv_reg_df)
             retained_cohesion_table, retained_cohesion_rows = supplemental_spearman_table(
                 inv_reg_df,
-                retained_inv_cols,
+                _dedup_retained,
                 q_cohesion_subdims,
                 block="INV retenus ↔ sous-dimensions Cohésion",
                 sort_by_abs=True,
+                apply_fdr=apply_fdr,
+                fdr_family="by_y",
             )
             if not retained_cohesion_table.empty:
                 all_corr_results.extend(retained_cohesion_rows)
                 retained_note = (
-                    "Synthèse des 14 indicateurs INV retenus en v2 "
-                    "(6 Speech, 4 Face, 4 Gaze) croisés avec SOC, TSK et COM. "
+                    f"Synthèse des {len(_dedup_retained)} indicateurs INV retenus après pruning "
+                    "croisés avec SOC, TSK et COM. "
                     + _supplemental_corr_note(
                         retained_cohesion_table,
                         context="INV retenus ↔ sous-dimensions Cohésion",
                         n8_warning=False,
+                        fdr_applied=apply_fdr,
                     )
                 )
                 _append_supplemental_corr_block(
@@ -5841,7 +6305,7 @@ def build_report(
     pdf_elems.append(Paragraph(section4_note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.1 * inch))
 
-    top_df = top_corr_df(all_corr_results, top_n=50, min_abs_rho=0.55, max_p=0.2)
+    top_df = _finalize_top_corr_display(top_corr_df(all_corr_results, top_n=50, min_abs_rho=0.55, max_p=0.2))
 
     lines.append("Corrélations les plus fortes retenues (`|rho| >= 0.55`, `p < 0.20`) :\n\n")
     pdf_elems.append(Paragraph("Corrélations les plus fortes retenues (|rho| >= 0.55, p < 0.20) :", styles["Normal"]))
@@ -5869,13 +6333,13 @@ def build_report(
     pdf_elems.append(Paragraph(supp_note, styles["Normal"]))
     pdf_elems.append(Spacer(1, 0.1 * inch))
 
-    supp_df = top_corr_df(
+    supp_df = _finalize_top_corr_display(top_corr_df(
         all_corr_results,
         top_n=50,
         min_abs_rho=0.4,
         max_abs_rho=0.55,
         max_p=0.2,
-    )
+    ))
 
     if supp_df.empty:
         lines.append("_(aucune corrélation avec p < 0.20 pour `0.40 <= |rho| < 0.55`)_\n\n")
